@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% set active_page = "data" %}
+
+{% block title %}Gestion des données — Trading Analytics{% endblock %}
+
+{% block content %}
+<div class="p-6 max-w-7xl mx-auto space-y-8">
+
+  <!-- Page header -->
+  <div>
+    <h1 class="text-2xl font-bold text-white">Gestion des données</h1>
+    <p class="text-gray-400 text-sm mt-1">Recherchez et ajoutez des instruments à suivre, puis téléchargez leur historique.</p>
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Search panel                                                         -->
+  <!-- ------------------------------------------------------------------ -->
+  <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
+    <h2 class="text-base font-semibold text-gray-200">Rechercher un instrument</h2>
+
+    <div class="flex flex-wrap gap-3">
+      <!-- Type filter -->
+      <select id="instrument-type"
+              class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2
+                     focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">Tous les types</option>
+        <option value="Forex">Forex</option>
+        <option value="Index">Indices</option>
+        <option value="Commodity">Commodities</option>
+        <option value="ETF">ETF</option>
+        <option value="Stock">Actions</option>
+        <option value="Cryptocurrency">Crypto</option>
+      </select>
+
+      <!-- Search input -->
+      <div class="relative flex-1 min-w-48">
+        <input
+          id="search-input"
+          type="text"
+          placeholder="Symbole ou nom (ex: EUR/USD, Gold, SPX...)"
+          autocomplete="off"
+          class="w-full bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg
+                 pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-500"
+          hx-get="/data/search"
+          hx-trigger="input changed delay:400ms, keyup[key=='Enter']"
+          hx-target="#search-results"
+          hx-include="#instrument-type"
+          hx-vals='js:{"q": document.getElementById("search-input").value, "type": document.getElementById("instrument-type").value}'
+          name="q"
+        />
+        <svg class="absolute left-2.5 top-2.5 w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+        </svg>
+        <!-- Loading spinner -->
+        <svg class="htmx-indicator absolute right-2.5 top-2.5 w-4 h-4 text-indigo-400 animate-spin"
+             fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div id="search-results"></div>
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Watchlist                                                            -->
+  <!-- ------------------------------------------------------------------ -->
+  <div id="watchlist-container">
+    {% include "partials/watchlist.html" %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Re-trigger search when type filter changes
+  document.getElementById('instrument-type').addEventListener('change', function() {
+    const input = document.getElementById('search-input');
+    if (input.value.length >= 2) {
+      htmx.trigger(input, 'keyup');
+    }
+  });
+</script>
+{% endblock %}
