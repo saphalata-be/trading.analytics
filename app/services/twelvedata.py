@@ -13,8 +13,10 @@ from app.config import TWELVEDATA_API_KEY
 
 BASE_URL = "https://api.twelvedata.com"
 
-# TwelveData free plan: 8 requests/minute
-_REQUEST_INTERVAL = 60 / 8  # seconds between requests
+# TwelveData free plan (testing): 1 request every 10 seconds
+_REQUEST_INTERVAL = 10  # seconds between requests
+
+_last_request_time: float = 0.0
 
 
 class TwelveDataError(Exception):
@@ -22,6 +24,12 @@ class TwelveDataError(Exception):
 
 
 def _get(endpoint: str, params: dict[str, Any]) -> dict:
+    global _last_request_time
+    elapsed = time.time() - _last_request_time
+    if elapsed < _REQUEST_INTERVAL:
+        time.sleep(_REQUEST_INTERVAL - elapsed)
+    _last_request_time = time.time()
+
     params["apikey"] = TWELVEDATA_API_KEY
     with httpx.Client(timeout=30) as client:
         resp = client.get(f"{BASE_URL}{endpoint}", params=params)
@@ -115,9 +123,6 @@ def fetch_full_history(
         # Next page: end just before the oldest bar we received
         oldest_dt = values[-1]["datetime"]
         end_date = oldest_dt
-
-        # Respect rate limit
-        time.sleep(_REQUEST_INTERVAL)
 
     # Sort ascending
     all_bars.sort(key=lambda b: b["datetime"])
