@@ -63,4 +63,17 @@ def init_db() -> None:
         )
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_cache (
+            symbol      VARCHAR NOT NULL,
+            exchange    VARCHAR NOT NULL,
+            max_levels  INTEGER NOT NULL,
+            tp_atr      DOUBLE NOT NULL,
+            level_atr   DOUBLE NOT NULL,
+            computed_at TIMESTAMP NOT NULL,
+            result_json VARCHAR NOT NULL,
+            PRIMARY KEY (symbol, exchange, max_levels, tp_atr, level_atr)
+        )
+    """)
+
     con.close()
