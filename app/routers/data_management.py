@@ -5,13 +5,15 @@ Handles:
   - Add to watchlist
   - Watchlist display
   - Timeframe management per watchlist entry
-  - OHLCV download (SSE streaming progress)
+  - OHLCV download (SSE streaming progress + sequential queue)
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -27,6 +29,198 @@ from app.services.twelvedata import (
 
 router = APIRouter(prefix="/data", tags=["data"])
 templates = Jinja2Templates(directory="app/templates")
+
+# ---------------------------------------------------------------------------
+# Download queue — ensures downloads run one at a time
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DownloadJob:
+    watchlist_id: int
+    timeframe: str
+    symbol: str
+    exchange: str
+    # Each job has its own asyncio.Queue to stream SSE events back to the client
+    events: asyncio.Queue = field(default_factory=asyncio.Queue)
+
+
+# Global FIFO queue of DownloadJob objects
+_download_queue: asyncio.Queue[DownloadJob] = asyncio.Queue()
+_queue_worker_started: bool = False
+_worker_busy: bool = False  # True while the worker is actively processing a job
+
+
+async def _queue_worker() -> None:
+    """Background worker: processes download jobs one at a time."""
+    global _worker_busy
+    while True:
+        job: DownloadJob = await _download_queue.get()
+        _worker_busy = True
+        try:
+            await _run_download_job(job)
+        except Exception as exc:
+            await job.events.put({"type": "error", "message": f"Erreur inattendue: {exc}"})
+        finally:
+            # Signal the SSE generator that the job is finished
+            await job.events.put(None)
+            _worker_busy = False
+            _download_queue.task_done()
+
+
+async def _run_download_job(job: DownloadJob) -> None:
+    """Execute a single download job, streaming events into job.events."""
+    loop = asyncio.get_event_loop()
+
+    _update_tf_status(job.watchlist_id, job.timeframe, "downloading")
+    await job.events.put({"type": "status", "message": "Démarrage du téléchargement..."})
+
+    # --- Check DB for existing data ---
+    con = get_connection()
+    row = con.execute(
+        "SELECT last_date FROM watchlist_timeframes WHERE watchlist_id = ? AND timeframe = ?",
+        [job.watchlist_id, job.timeframe],
+    ).fetchone()
+    con.close()
+
+    start_date: str | None = None
+    if row and row[0]:
+        # Existing data: resume from the bar AFTER the last known one.
+        # fetch_full_history uses start_date as a >= cutoff, so we add 1 minute
+        # to avoid re-fetching the last bar already in the DB.
+        last_date_raw = row[0]
+        if isinstance(last_date_raw, datetime):
+            last_dt = last_date_raw
+        else:
+            last_dt = datetime.strptime(str(last_date_raw)[:19], "%Y-%m-%d %H:%M:%S")
+        start_date = (last_dt + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+        await job.events.put({
+            "type": "status",
+            "message": f"Reprise depuis {start_date}...",
+        })
+    else:
+        await job.events.put({
+            "type": "status",
+            "message": "Téléchargement depuis le 01/01/2010...",
+        })
+
+    # --- Run blocking download + incremental DB save in thread pool ---
+    bars_container: list[list[dict]] = [[]]
+    error_container: list[str] = []
+
+    def _save_batch(batch: list[dict]) -> None:
+        """Called per page from the download thread — saves bars to DB immediately."""
+        con = get_connection()
+        try:
+            con.executemany(
+                """
+                INSERT INTO ohlcv (symbol, exchange, timeframe, datetime, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (symbol, exchange, timeframe, datetime) DO UPDATE SET
+                    open   = excluded.open,
+                    high   = excluded.high,
+                    low    = excluded.low,
+                    close  = excluded.close,
+                    volume = excluded.volume
+                """,
+                [
+                    (job.symbol, job.exchange, job.timeframe,
+                     b["datetime"], b["open"], b["high"], b["low"], b["close"], b["volume"])
+                    for b in batch
+                ],
+            )
+        finally:
+            con.close()
+
+    def _progress(fetched: int, total: int) -> None:
+        # Fire-and-forget: schedule a status event on the event loop
+        asyncio.run_coroutine_threadsafe(
+            job.events.put({"type": "status", "message": f"{total} barres récupérées..."}),
+            loop,
+        )
+
+    def run_download() -> None:
+        try:
+            bars = fetch_full_history(
+                job.symbol,
+                job.exchange,
+                job.timeframe,
+                start_date=start_date,
+                progress_callback=_progress,
+                batch_callback=_save_batch,
+            )
+            bars_container[0] = bars
+        except TwelveDataError as exc:
+            error_container.append(str(exc))
+        except Exception as exc:
+            error_container.append(f"Erreur inattendue: {exc}")
+
+    await loop.run_in_executor(None, run_download)
+
+    if error_container:
+        _update_tf_status(job.watchlist_id, job.timeframe, "error")
+        await job.events.put({"type": "error", "message": error_container[0]})
+        return
+
+    bars = bars_container[0]
+    if not bars:
+        # No new bars (already up to date)
+        _update_tf_status(job.watchlist_id, job.timeframe, "done")
+        await job.events.put({"type": "status", "message": "Données déjà à jour."})
+        # Fetch current totals from DB to report back
+        con2 = get_connection()
+        meta = con2.execute(
+            "SELECT first_date, last_date, total_bars FROM watchlist_timeframes WHERE watchlist_id = ? AND timeframe = ?",
+            [job.watchlist_id, job.timeframe],
+        ).fetchone()
+        con2.close()
+        if meta:
+            await job.events.put({
+                "type": "done",
+                "total_bars": meta[2] or 0,
+                "first_date": str(meta[0]) if meta[0] else "",
+                "last_date": str(meta[1]) if meta[1] else "",
+            })
+        else:
+            await job.events.put({"type": "done", "total_bars": 0, "first_date": "", "last_date": ""})
+        return
+
+    # Bars already saved to DB page-by-page — recompute final stats in thread pool
+    def _finalize() -> tuple:
+        con = get_connection()
+        try:
+            agg = con.execute(
+                """
+                SELECT MIN(datetime), MAX(datetime), COUNT(*)
+                FROM ohlcv
+                WHERE symbol = ? AND exchange = ? AND timeframe = ?
+                """,
+                [job.symbol, job.exchange, job.timeframe],
+            ).fetchone()
+            fd = str(agg[0]) if agg and agg[0] else bars[0]["datetime"]
+            ld = str(agg[1]) if agg and agg[1] else bars[-1]["datetime"]
+            tb = agg[2] if agg else len(bars)
+            now = datetime.now().isoformat(sep=" ", timespec="seconds")
+            con.execute(
+                """
+                UPDATE watchlist_timeframes
+                SET first_date = ?, last_date = ?, total_bars = ?,
+                    last_download = ?, status = 'done'
+                WHERE watchlist_id = ? AND timeframe = ?
+                """,
+                [fd, ld, tb, now, job.watchlist_id, job.timeframe],
+            )
+        finally:
+            con.close()
+        return fd, ld, tb
+
+    first_date, last_date, total_bars = await loop.run_in_executor(None, _finalize)
+
+    await job.events.put({
+        "type": "done",
+        "total_bars": total_bars,
+        "first_date": first_date,
+        "last_date": last_date,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +330,15 @@ async def add_to_watchlist(
             INSERT INTO watchlist (id, symbol, exchange, instrument_type)
             VALUES (nextval('watchlist_id_seq'), ?, ?, ?)
         """, [symbol, exchange, instrument_type])
+        new_id = con.execute(
+            "SELECT id FROM watchlist WHERE symbol = ? AND exchange = ?",
+            [symbol, exchange]
+        ).fetchone()[0]
+        for tf in ["1day", "1h", "1min"]:
+            con.execute("""
+                INSERT INTO watchlist_timeframes (watchlist_id, timeframe, status)
+                VALUES (?, ?, 'pending')
+            """, [new_id, tf])
 
     # Return updated watchlist partial
     watchlist = _get_watchlist(con)
@@ -233,15 +436,18 @@ async def remove_timeframe(
 
 
 # ---------------------------------------------------------------------------
-# Download history (SSE)
+# Download history (SSE + queue)
 # ---------------------------------------------------------------------------
 
 @router.get("/watchlist/{watchlist_id}/download/{timeframe}")
-async def download_history(watchlist_id: int, timeframe: str):
+async def download_history(request: Request, watchlist_id: int, timeframe: str):
     """
     Server-Sent Events endpoint.
-    Streams progress events while downloading OHLCV history.
+    Enqueues the download job and streams progress events back to the client.
+    Downloads are processed sequentially by the background worker.
     """
+    global _queue_worker_started
+
     con = get_connection()
     row = con.execute(
         "SELECT symbol, exchange FROM watchlist WHERE id = ?", [watchlist_id]
@@ -255,78 +461,39 @@ async def download_history(watchlist_id: int, timeframe: str):
 
     symbol, exchange = row
 
+    # Start the background worker once (on first download request)
+    if not _queue_worker_started:
+        _queue_worker_started = True
+        asyncio.create_task(_queue_worker())
+
+    # Build the job and enqueue it
+    job = DownloadJob(
+        watchlist_id=watchlist_id,
+        timeframe=timeframe,
+        symbol=symbol,
+        exchange=exchange,
+    )
+
+    # jobs_ahead = items waiting in queue + 1 if worker is actively processing another job
+    jobs_ahead = _download_queue.qsize() + (1 if _worker_busy else 0)
+    await _download_queue.put(job)
+
     async def event_stream():
-        loop = asyncio.get_event_loop()
+        # Always send an immediate event so the browser never stays stuck at "Connexion..."
+        if jobs_ahead > 0:
+            _update_tf_status(watchlist_id, timeframe, "pending")
+            yield f"data: {json.dumps({'type': 'status', 'message': f'En attente ({jobs_ahead} téléchargement(s) avant vous)...'})}\n\n"
+        else:
+            # Worker is idle — job will start almost immediately; still acknowledge receipt
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Démarrage du téléchargement...'})}\n\n"
 
-        # Mark as downloading
-        _update_tf_status(watchlist_id, timeframe, "downloading")
-        yield f"data: {json.dumps({'type': 'status', 'message': 'Démarrage du téléchargement...'})}\n\n"
-
-        bars_container: list[list[dict]] = [[]]
-        error_container: list[str] = []
-
-        def progress_cb(fetched: int, total: int):
-            pass  # We'll report after each page in the thread
-
-        def run_download():
-            try:
-                bars = fetch_full_history(symbol, exchange, timeframe)
-                bars_container[0] = bars
-            except TwelveDataError as e:
-                error_container.append(str(e))
-            except Exception as e:
-                error_container.append(f"Erreur inattendue: {e}")
-
-        # Run blocking download in thread pool
-        await loop.run_in_executor(None, run_download)
-
-        if error_container:
-            _update_tf_status(watchlist_id, timeframe, "error")
-            yield f"data: {json.dumps({'type': 'error', 'message': error_container[0]})}\n\n"
-            return
-
-        bars = bars_container[0]
-        if not bars:
-            _update_tf_status(watchlist_id, timeframe, "error")
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Aucune donnée disponible'})}\n\n"
-            return
-
-        # Save to DB
-        yield f"data: {json.dumps({'type': 'status', 'message': f'Sauvegarde de {len(bars)} barres...'})}\n\n"
-
-        con2 = get_connection()
-        # Upsert: insert or replace on conflict to avoid duplicate key errors
-        con2.executemany(
-            """
-            INSERT INTO ohlcv (symbol, exchange, timeframe, datetime, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (symbol, exchange, timeframe, datetime) DO UPDATE SET
-                open   = excluded.open,
-                high   = excluded.high,
-                low    = excluded.low,
-                close  = excluded.close,
-                volume = excluded.volume
-            """,
-            [
-                (symbol, exchange, timeframe,
-                 b["datetime"], b["open"], b["high"], b["low"], b["close"], b["volume"])
-                for b in bars
-            ]
-        )
-
-        first_date = bars[0]["datetime"]
-        last_date = bars[-1]["datetime"]
-        now = datetime.now().isoformat(sep=" ", timespec="seconds")
-
-        con2.execute("""
-            UPDATE watchlist_timeframes
-            SET first_date = ?, last_date = ?, total_bars = ?,
-                last_download = ?, status = 'done'
-            WHERE watchlist_id = ? AND timeframe = ?
-        """, [first_date, last_date, len(bars), now, watchlist_id, timeframe])
-        con2.close()
-
-        yield f"data: {json.dumps({'type': 'done', 'total_bars': len(bars), 'first_date': first_date, 'last_date': last_date})}\n\n"
+        # Stream events produced by the worker
+        while True:
+            event = await job.events.get()
+            if event is None:
+                # Worker signals end of job
+                break
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

@@ -20,7 +20,7 @@
 
     <div class="flex flex-wrap gap-3">
       <!-- Type filter -->
-      <select id="instrument-type"
+      <select id="instrument-type" name="type"
               class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2
                      focus:outline-none focus:ring-2 focus:ring-indigo-500">
         <option value="">Tous les types</option>
@@ -82,7 +82,9 @@
   document.getElementById('instrument-type').addEventListener('change', function() {
     const input = document.getElementById('search-input');
     if (input.value.length >= 2) {
-      htmx.trigger(input, 'keyup');
+      htmx.trigger(input, 'input');
+    } else {
+      document.getElementById('search-results').innerHTML = '';
     }
   });
 </script>

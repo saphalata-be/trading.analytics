@@ -2,7 +2,19 @@
 <div class="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
   <div class="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
     <h2 class="text-base font-semibold text-gray-200">Instruments suivis</h2>
-    <span class="text-xs text-gray-500">{{ watchlist|length }} instrument(s)</span>
+    <div class="flex items-center gap-3">
+      <button onclick="updateAll()"
+              id="update-all-btn"
+              class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600
+                     text-white text-xs font-medium rounded-lg transition-colors">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Mettre à jour
+      </button>
+      <span class="text-xs text-gray-500">{{ watchlist|length }} instrument(s)</span>
+    </div>
   </div>
 
   <div class="divide-y divide-gray-800">
@@ -60,7 +72,7 @@
           </thead>
           <tbody class="divide-y divide-gray-800/50">
             {% for tf in item.timeframes %}
-            <tr id="tf-row-{{ item.id }}-{{ tf.timeframe }}" class="hover:bg-gray-800/30">
+            <tr id="tf-row-{{ item.id }}-{{ tf.timeframe }}" data-watchlist-id="{{ item.id }}" data-timeframe="{{ tf.timeframe }}" class="hover:bg-gray-800/30">
               <td class="py-2 pr-4 font-mono font-semibold text-gray-300">{{ tf.timeframe }}</td>
               <td class="py-2 pr-4 text-gray-400 font-mono">
                 {{ tf.first_date if tf.first_date else '—' }}
@@ -101,7 +113,13 @@
                   </button>
                   <!-- Progress message -->
                   <span id="tf-progress-{{ item.id }}-{{ tf.timeframe }}"
-                        class="text-gray-500 text-xs hidden"></span>
+                        class="text-xs
+                          {%- if tf.status == 'error' %} text-red-400
+                          {%- elif tf.status == 'downloading' %} text-gray-500
+                          {%- else %} text-gray-500 hidden{%- endif %}">
+                    {%- if tf.status == 'error' %}Erreur
+                    {%- elif tf.status == 'downloading' %}En cours...
+                    {%- endif %}</span>
                   <!-- Remove timeframe -->
                   <button
                     hx-delete="/data/watchlist/{{ item.id }}/timeframe/{{ tf.timeframe }}"
@@ -161,7 +179,7 @@
 {% endif %}
 
 <script>
-function startDownload(watchlistId, timeframe) {
+function startDownload(watchlistId, timeframe, onDone) {
   const btn = document.getElementById(`dl-btn-${watchlistId}-${timeframe}`);
   const progress = document.getElementById(`tf-progress-${watchlistId}-${timeframe}`);
   const statusEl = document.getElementById(`tf-status-${watchlistId}-${timeframe}`);
@@ -169,10 +187,12 @@ function startDownload(watchlistId, timeframe) {
   btn.disabled = true;
   btn.classList.add('opacity-50', 'cursor-not-allowed');
   progress.classList.remove('hidden');
+  progress.classList.remove('text-red-400');
   progress.textContent = 'Connexion...';
 
-  statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-yellow-900/60 text-yellow-300';
-  statusEl.textContent = 'En cours...';
+  // Show "queued" state immediately — will be updated once SSE events arrive
+  statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300';
+  statusEl.textContent = 'En attente';
 
   const evtSource = new EventSource(`/data/watchlist/${watchlistId}/download/${timeframe}`);
 
@@ -181,6 +201,15 @@ function startDownload(watchlistId, timeframe) {
 
     if (data.type === 'status') {
       progress.textContent = data.message;
+      // Distinguish "queued" (waiting in line) from "downloading" (worker active)
+      const isQueued = data.message.startsWith('En attente');
+      if (isQueued) {
+        statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300';
+        statusEl.textContent = 'En attente';
+      } else {
+        statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-yellow-900/60 text-yellow-300';
+        statusEl.textContent = 'En cours...';
+      }
     } else if (data.type === 'done') {
       evtSource.close();
       progress.classList.add('hidden');
@@ -190,14 +219,7 @@ function startDownload(watchlistId, timeframe) {
       statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-green-900/60 text-green-300';
       statusEl.textContent = 'Téléchargé';
 
-      // Reload watchlist to show updated dates/bars
-      htmx.ajax('GET', '/data/', {target: '#watchlist-container', swap: 'none'});
-      // Simpler: reload the page section via HTMX
-      fetch('/data/watchlist/{{ 0 }}/timeframe/refresh').catch(() => {});
-      // Actually just reload the whole watchlist partial
-      htmx.ajax('POST', '/data/watchlist/refresh', {target: '#watchlist-container'}).catch(() => {});
-      // Best approach: reload page
-      setTimeout(() => location.reload(), 500);
+      if (onDone) { onDone(); } else { setTimeout(() => location.reload(), 500); }
     } else if (data.type === 'error') {
       evtSource.close();
       progress.textContent = data.message;
@@ -207,6 +229,8 @@ function startDownload(watchlistId, timeframe) {
 
       statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-red-900/60 text-red-300';
       statusEl.textContent = 'Erreur';
+
+      if (onDone) { onDone(); }
     }
   };
 
@@ -216,6 +240,32 @@ function startDownload(watchlistId, timeframe) {
     progress.classList.add('text-red-400');
     btn.disabled = false;
     btn.classList.remove('opacity-50', 'cursor-not-allowed');
+
+    if (onDone) { onDone(); }
   };
+}
+
+function updateAll() {
+  const btn = document.getElementById('update-all-btn');
+  btn.disabled = true;
+  btn.classList.add('opacity-50', 'cursor-not-allowed');
+
+  const rows = document.querySelectorAll('tr[data-watchlist-id]');
+  let pending = rows.length;
+
+  if (pending === 0) {
+    btn.disabled = false;
+    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+    return;
+  }
+
+  const onEachDone = () => {
+    pending--;
+    if (pending === 0) { setTimeout(() => location.reload(), 500); }
+  };
+
+  rows.forEach(row => {
+    startDownload(parseInt(row.dataset.watchlistId), row.dataset.timeframe, onEachDone);
+  });
 }
 </script>
