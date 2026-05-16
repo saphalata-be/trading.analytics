@@ -150,49 +150,53 @@ def _run_cycle(
     end_dt: Optional[datetime] = None
     end_idx: int = start_idx
 
-    for i in range(start_idx + 1, len(bars)):
+    for i in range(start_idx, len(bars)):
         bar = bars[i]
         # Use the bar's high/low for threshold checks. If both TP and an adverse
         # trigger are reachable within the same bar, prefer the adverse path.
+        # start_idx is included: entry is at its open, but the bar's range can
+        # already trigger new levels or TP.
         bar_dt: datetime = bar[0]
         bar_high: float = bar[2]
         bar_low: float = bar[3]
 
-        # TP price where cumulative profit = tp_atr * atr50
-        n = len(levels)
+        # Add ALL levels that this bar triggers adversely (a bar may skip several).
+        # Adverse moves take priority over TP within the same bar.
+        while True:
+            if direction == "LONG":
+                trigger = last_entry - level_atr * atr50
+                adverse_hit = bar_low <= trigger
+            else:
+                trigger = last_entry + level_atr * atr50
+                adverse_hit = bar_high >= trigger
+
+            if not adverse_hit:
+                break
+
+            if len(levels) >= max_levels:
+                # Max levels reached before the bar stopped.
+                closed_max_levels = True
+                end_dt = bar_dt
+                end_idx = i
+                break
+
+            levels.append(trigger)
+            last_entry = trigger
+
+        if closed_max_levels:
+            break
+
+        # TP price (recalculated with all levels added this bar)
         # cum_profit = sum_i sign*(close - entry_i) = sign*n*close - sign*sum(entries)
         # = tp_atr*atr50  =>  close = (tp_atr*atr50 + sign*sum(entries)) / (sign*n)
+        n = len(levels)
         sum_entries = sum(levels)
         tp_price = (tp_atr * atr50 / sign + sum_entries) / n  # valid for sign != 0
 
-        # Check if a new level should be added
-        # New level when price moves adversely >= level_atr * atr50 from last_entry
-        new_level_price: Optional[float] = None
         if direction == "LONG":
-            trigger = last_entry - level_atr * atr50
-            if bar_low <= trigger:
-                new_level_price = trigger
             tp_hit = bar_high >= tp_price
         else:
-            trigger = last_entry + level_atr * atr50
-            if bar_high >= trigger:
-                new_level_price = trigger
             tp_hit = bar_low <= tp_price
-
-        if new_level_price is not None:
-            if len(levels) < max_levels:
-                levels.append(new_level_price)
-                last_entry = new_level_price
-                end_dt = bar_dt
-                end_idx = i
-                continue
-
-            # Max levels reached: assume the adverse move happens before any
-            # potential rebound inside the same bar.
-            closed_max_levels = True
-            end_dt = bar_dt
-            end_idx = i
-            break
 
         if tp_hit:
             completed = True
