@@ -32,6 +32,7 @@ from app.database import get_connection
 
 # In-memory job store: job_id -> {"queue": asyncio.Queue, "result": dict | None}
 _jobs: dict[str, dict] = {}
+_STRATEGY_CACHE_VERSION = 2
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
 templates = Jinja2Templates(directory="app/templates")
@@ -48,13 +49,13 @@ def _compute_atr50(con, symbol: str, exchange: str, before_dt: datetime) -> Opti
         SELECT high, low
         FROM ohlcv
         WHERE symbol = ? AND exchange = ? AND timeframe = '1day'
-          AND datetime < ?
+          AND CAST(datetime AS DATE) < CAST(? AS DATE)
         ORDER BY datetime DESC
         LIMIT 50
         """,
         [symbol, exchange, before_dt],
     ).fetchall()
-    if len(rows) < 1:
+    if len(rows) < 50:
         return None
     return sum(h - l for h, l in rows) / len(rows)
 
@@ -82,10 +83,6 @@ def _simulate_cycles(
     if not bars:
         return []
 
-    # Index bars by position for fast lookup
-    # Build a dict: datetime -> index
-    dt_index: dict[datetime, int] = {b[0]: i for i, b in enumerate(bars)}
-
     # Identify all full-hour bar indices
     hourly_indices: list[int] = [
         i for i, b in enumerate(bars) if b[0].minute == 0
@@ -99,7 +96,7 @@ def _simulate_cycles(
     for start_idx in hourly_indices:
         start_bar = bars[start_idx]
         start_dt: datetime = start_bar[0]
-        start_price: float = start_bar[4]  # close of the start bar
+        start_price: float = start_bar[1]  # open of the start bar
 
         # ATR50 from daily data before start_dt
         date_key = start_dt.date().isoformat()
@@ -155,32 +152,18 @@ def _run_cycle(
 
     for i in range(start_idx + 1, len(bars)):
         bar = bars[i]
-        # Use the bar's low/high and close for intra-bar check
+        # Use the bar's high/low for threshold checks. If both TP and an adverse
+        # trigger are reachable within the same bar, prefer the adverse path.
         bar_dt: datetime = bar[0]
+        bar_high: float = bar[2]
         bar_low: float = bar[3]
-        bar_high: float = bar[4] if len(bar) < 5 else bar[4]  # close
-        bar_close: float = bar[4]
 
-        # Check TP first: can the TP be hit during this bar?
         # TP price where cumulative profit = tp_atr * atr50
         n = len(levels)
         # cum_profit = sum_i sign*(close - entry_i) = sign*n*close - sign*sum(entries)
         # = tp_atr*atr50  =>  close = (tp_atr*atr50 + sign*sum(entries)) / (sign*n)
         sum_entries = sum(levels)
         tp_price = (tp_atr * atr50 / sign + sum_entries) / n  # valid for sign != 0
-
-        # Check if TP is reachable within this bar
-        tp_hit = False
-        if direction == "LONG" and bar_high >= tp_price and tp_price > last_entry - level_atr * atr50:
-            tp_hit = True
-        elif direction == "SHORT" and bar_low <= tp_price and tp_price < last_entry + level_atr * atr50:
-            tp_hit = True
-
-        if tp_hit:
-            completed = True
-            end_dt = bar_dt
-            end_idx = i
-            break
 
         # Check if a new level should be added
         # New level when price moves adversely >= level_atr * atr50 from last_entry
@@ -189,21 +172,33 @@ def _run_cycle(
             trigger = last_entry - level_atr * atr50
             if bar_low <= trigger:
                 new_level_price = trigger
+            tp_hit = bar_high >= tp_price
         else:
             trigger = last_entry + level_atr * atr50
             if bar_high >= trigger:
                 new_level_price = trigger
+            tp_hit = bar_low <= tp_price
 
         if new_level_price is not None:
             if len(levels) < max_levels:
                 levels.append(new_level_price)
                 last_entry = new_level_price
-            else:
-                # Max levels reached — close cycle immediately
-                closed_max_levels = True
                 end_dt = bar_dt
                 end_idx = i
-                break
+                continue
+
+            # Max levels reached: assume the adverse move happens before any
+            # potential rebound inside the same bar.
+            closed_max_levels = True
+            end_dt = bar_dt
+            end_idx = i
+            break
+
+        if tp_hit:
+            completed = True
+            end_dt = bar_dt
+            end_idx = i
+            break
 
         # Update last bar seen
         end_dt = bar_dt
@@ -298,6 +293,8 @@ def _load_cache(
     if row is None:
         return None
     result = json.loads(row[0])
+    if result.get("cache_version") != _STRATEGY_CACHE_VERSION:
+        return None
     result["from_cache"] = True
     result["cached_at"] = row[1]
     return result
@@ -307,7 +304,12 @@ def _save_cache(
     symbol: str, exchange: str, max_levels: int, tp_atr: float, level_atr: float, result: dict
 ) -> None:
     """Persist result to strategy_cache, replacing any existing entry."""
-    to_store = {k: v for k, v in result.items() if k not in ("from_cache", "cached_at")}
+    to_store = {
+        k: v
+        for k, v in result.items()
+        if k not in ("from_cache", "cached_at")
+    }
+    to_store["cache_version"] = _STRATEGY_CACHE_VERSION
     result_json = json.dumps(to_store)
     con = get_connection()
     try:
