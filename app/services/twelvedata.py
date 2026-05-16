@@ -89,6 +89,7 @@ def fetch_full_history(
     cutoff = start_date if start_date else HISTORY_START_DATE
 
     all_bars: list[dict] = []
+    total_bars_fetched = 0
     end_date: str | None = None  # pagination cursor (DESC walk)
     page = 0
 
@@ -129,12 +130,14 @@ def fetch_full_history(
 
         if batch_callback and bars:
             batch_callback(bars)
+        else:
+            all_bars.extend(bars)
 
-        all_bars.extend(bars)
+        total_bars_fetched += len(bars)
         page += 1
 
         if progress_callback:
-            progress_callback(len(bars), len(all_bars))
+            progress_callback(len(bars), total_bars_fetched)
 
         # Stop if we hit the cutoff date or got fewer bars than the page size
         if reached_cutoff or len(values) < 5000:

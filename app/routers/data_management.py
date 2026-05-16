@@ -104,32 +104,8 @@ async def _run_download_job(job: DownloadJob) -> None:
         })
 
     # --- Run blocking download + incremental DB save in thread pool ---
-    bars_container: list[list[dict]] = [[]]
+    fetched_count: list[int] = [0]
     error_container: list[str] = []
-
-    def _save_batch(batch: list[dict]) -> None:
-        """Called per page from the download thread — saves bars to DB immediately."""
-        con = get_connection()
-        try:
-            con.executemany(
-                """
-                INSERT INTO ohlcv (symbol, exchange, timeframe, datetime, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (symbol, exchange, timeframe, datetime) DO UPDATE SET
-                    open   = excluded.open,
-                    high   = excluded.high,
-                    low    = excluded.low,
-                    close  = excluded.close,
-                    volume = excluded.volume
-                """,
-                [
-                    (job.symbol, job.exchange, job.timeframe,
-                     b["datetime"], b["open"], b["high"], b["low"], b["close"], b["volume"])
-                    for b in batch
-                ],
-            )
-        finally:
-            con.close()
 
     def _progress(fetched: int, total: int) -> None:
         # Fire-and-forget: schedule a status event on the event loop
@@ -139,8 +115,29 @@ async def _run_download_job(job: DownloadJob) -> None:
         )
 
     def run_download() -> None:
+        con = get_connection()
         try:
-            bars = fetch_full_history(
+            def _save_batch(batch: list[dict]) -> None:
+                con.executemany(
+                    """
+                    INSERT INTO ohlcv (symbol, exchange, timeframe, datetime, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (symbol, exchange, timeframe, datetime) DO UPDATE SET
+                        open   = excluded.open,
+                        high   = excluded.high,
+                        low    = excluded.low,
+                        close  = excluded.close,
+                        volume = excluded.volume
+                    """,
+                    [
+                        (job.symbol, job.exchange, job.timeframe,
+                         b["datetime"], b["open"], b["high"], b["low"], b["close"], b["volume"])
+                        for b in batch
+                    ],
+                )
+                fetched_count[0] += len(batch)
+
+            fetch_full_history(
                 job.symbol,
                 job.exchange,
                 job.timeframe,
@@ -148,11 +145,12 @@ async def _run_download_job(job: DownloadJob) -> None:
                 progress_callback=_progress,
                 batch_callback=_save_batch,
             )
-            bars_container[0] = bars
         except TwelveDataError as exc:
             error_container.append(str(exc))
         except Exception as exc:
             error_container.append(f"Erreur inattendue: {exc}")
+        finally:
+            con.close()
 
     await loop.run_in_executor(None, run_download)
 
@@ -161,8 +159,7 @@ async def _run_download_job(job: DownloadJob) -> None:
         await job.events.put({"type": "error", "message": error_container[0]})
         return
 
-    bars = bars_container[0]
-    if not bars:
+    if fetched_count[0] == 0:
         # No new bars (already up to date)
         _update_tf_status(job.watchlist_id, job.timeframe, "done")
         await job.events.put({"type": "status", "message": "Données déjà à jour."})
@@ -196,9 +193,9 @@ async def _run_download_job(job: DownloadJob) -> None:
                 """,
                 [job.symbol, job.exchange, job.timeframe],
             ).fetchone()
-            fd = str(agg[0]) if agg and agg[0] else bars[0]["datetime"]
-            ld = str(agg[1]) if agg and agg[1] else bars[-1]["datetime"]
-            tb = agg[2] if agg else len(bars)
+            fd = str(agg[0]) if agg and agg[0] else ""
+            ld = str(agg[1]) if agg and agg[1] else ""
+            tb = agg[2] if agg else 0
             now = datetime.now().isoformat(sep=" ", timespec="seconds")
             con.execute(
                 """
