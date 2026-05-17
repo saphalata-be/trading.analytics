@@ -24,6 +24,7 @@ from app.database import get_connection
 from app.services.twelvedata import (
     TwelveDataError,
     fetch_full_history,
+    get_earliest_date,
     search_instruments,
 )
 
@@ -303,6 +304,11 @@ async def add_to_watchlist(
     currency: str = Form(""),
     country: str = Form(""),
 ):
+    try:
+        get_earliest_date(symbol, exchange, "1day")
+    except TwelveDataError as exc:
+        return HTMLResponse(f'<p class="text-red-500 text-sm">{exc}</p>', status_code=400)
+
     con = get_connection()
 
     # Upsert instrument

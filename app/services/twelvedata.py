@@ -13,6 +13,19 @@ from app.config import TWELVEDATA_API_KEY
 
 BASE_URL = "https://api.twelvedata.com"
 
+# These values come from TwelveData's instrument_type field and are not valid
+# exchange identifiers for the time_series / earliest_timestamp endpoints.
+_NON_EXCHANGE_VALUES = {"COMMODITY", "PHYSICAL CURRENCY", ""}
+
+# TwelveData symbol_search returns a few commodity identifiers that are not the
+# identifiers accepted by time_series. Use the working history symbols here.
+_HISTORY_SYMBOL_ALIASES: dict[str, tuple[str, ...]] = {
+    "W_1": ("ZW1",),
+    "S_1": ("S1",),
+}
+
+_INVALID_SYMBOL_ERROR = "**symbol** or **figi** parameter is missing or invalid"
+
 # TwelveData free plan (testing): 1 request every 10 seconds
 _REQUEST_INTERVAL = 1.5  # seconds between requests
 
@@ -24,6 +37,75 @@ HISTORY_START_DATE = "2010-01-01 00:00:00"
 
 class TwelveDataError(Exception):
     pass
+
+
+def _time_series_params(
+    symbol: str,
+    exchange: str,
+    timeframe: str,
+    outputsize: int,
+    order: str,
+    end_date: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "interval": timeframe,
+        "outputsize": outputsize,
+        "order": order,
+        "format": "JSON",
+    }
+    if exchange and exchange not in _NON_EXCHANGE_VALUES:
+        params["exchange"] = exchange
+    if end_date:
+        params["end_date"] = end_date
+    return params
+
+
+def _time_series_candidates(symbol: str) -> list[str]:
+    candidates = [symbol, *_HISTORY_SYMBOL_ALIASES.get(symbol, ())]
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return deduped
+
+
+def _unsupported_history_symbol_error(symbol: str, candidates: list[str]) -> TwelveDataError:
+    aliases = [candidate for candidate in candidates if candidate != symbol]
+    if aliases:
+        return TwelveDataError(
+            f"Aucune serie historique TwelveData exploitable pour {symbol}. "
+            f"Alias testes: {', '.join(aliases)}."
+        )
+    return TwelveDataError(f"Aucune serie historique TwelveData exploitable pour {symbol}.")
+
+
+def _get_time_series(
+    symbol: str,
+    exchange: str,
+    timeframe: str,
+    outputsize: int,
+    order: str,
+    end_date: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    candidates = _time_series_candidates(symbol)
+
+    for candidate in candidates:
+        params = _time_series_params(candidate, exchange, timeframe, outputsize, order, end_date)
+        try:
+            return candidate, _get("/time_series", params)
+        except TwelveDataError as exc:
+            if _INVALID_SYMBOL_ERROR in str(exc):
+                continue
+            if candidate != symbol:
+                raise TwelveDataError(
+                    f"{symbol} utilise le symbole TwelveData {candidate}: {exc}"
+                ) from exc
+            raise
+
+    raise _unsupported_history_symbol_error(symbol, candidates)
 
 
 def _get(endpoint: str, params: dict[str, Any]) -> dict:
@@ -92,20 +174,23 @@ def fetch_full_history(
     total_bars_fetched = 0
     end_date: str | None = None  # pagination cursor (DESC walk)
     page = 0
+    api_symbol: str | None = None
 
     while True:
-        params: dict[str, Any] = {
-            "symbol": symbol,
-            "exchange": exchange,
-            "interval": timeframe,
-            "outputsize": 5000,
-            "order": "DESC",  # newest first so we can paginate backwards
-            "format": "JSON",
-        }
-        if end_date:
-            params["end_date"] = end_date
-
-        data = _get("/time_series", params)
+        if api_symbol is None:
+            api_symbol, data = _get_time_series(
+                symbol,
+                exchange,
+                timeframe,
+                outputsize=5000,
+                order="DESC",
+                end_date=end_date,
+            )
+        else:
+            data = _get(
+                "/time_series",
+                _time_series_params(api_symbol, exchange, timeframe, 5000, "DESC", end_date),
+            )
         values = data.get("values", [])
 
         if not values:
@@ -156,15 +241,7 @@ def fetch_full_history(
 
 def get_earliest_date(symbol: str, exchange: str, timeframe: str) -> str | None:
     """Return the datetime string of the earliest available bar."""
-    params: dict[str, Any] = {
-        "symbol": symbol,
-        "exchange": exchange,
-        "interval": timeframe,
-        "outputsize": 1,
-        "order": "ASC",
-        "format": "JSON",
-    }
-    data = _get("/time_series", params)
+    _, data = _get_time_series(symbol, exchange, timeframe, outputsize=1, order="ASC")
     values = data.get("values", [])
     if values:
         return values[0]["datetime"]
