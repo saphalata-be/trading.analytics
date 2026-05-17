@@ -75,6 +75,18 @@ def init_cache_db() -> None:
     On first run, migrates existing rows from trading.duckdb if any."""
     con = get_cache_connection()
     con.execute("""
+        CREATE TABLE IF NOT EXISTS mt5_symbols (
+            name        VARCHAR PRIMARY KEY,
+            path        VARCHAR,
+            description VARCHAR,
+            volume_min  DOUBLE,
+            swap_mode   INTEGER,
+            swap_long   DOUBLE,
+            swap_short  DOUBLE,
+            updated_at  TIMESTAMP
+        )
+    """)
+    con.execute("""
         CREATE TABLE IF NOT EXISTS strategy_cache (
             symbol      VARCHAR NOT NULL,
             exchange    VARCHAR NOT NULL,

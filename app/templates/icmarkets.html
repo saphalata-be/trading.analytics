@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% set active_page = "icmarkets" %}
+
+{% block title %}IC Markets — Trading Analytics{% endblock %}
+
+{% block content %}
+<div class="p-6 max-w-7xl mx-auto space-y-6">
+
+  <!-- Page header -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-white">IC Markets</h1>
+      <p class="text-gray-400 text-sm mt-1">
+        Symboles disponibles via MetaTrader 5 — regroupés par catégorie.
+      </p>
+    </div>
+
+    <!-- Refresh button -->
+    <button
+      hx-post="/icmarkets/refresh"
+      hx-target="#symbols-container"
+      hx-swap="outerHTML"
+      hx-indicator="#refresh-indicator"
+      class="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500
+             text-white text-sm font-medium rounded-lg transition-colors
+             disabled:opacity-50 disabled:cursor-not-allowed">
+      <svg class="w-4 h-4 htmx-indicator hidden" id="refresh-indicator-icon"
+           xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      </svg>
+      <svg class="w-4 h-4" id="refresh-static-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      <span id="refresh-label">Actualiser les symboles</span>
+      <span id="refresh-indicator" class="htmx-indicator text-xs text-indigo-200">Connexion à MT5…</span>
+    </button>
+  </div>
+
+  <!-- Symbols section (replaced by HTMX on refresh) -->
+  {% include "partials/icmarkets_symbols.html" %}
+
+</div>
+
+<style>
+  /* Rotate chevron when <details> is open */
+  details[open] summary svg:first-of-type {
+    transform: rotate(90deg);
+  }
+</style>
+{% endblock %}
