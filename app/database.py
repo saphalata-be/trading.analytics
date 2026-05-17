@@ -1,9 +1,13 @@
 import duckdb
-from app.config import DATABASE_PATH
+from app.config import DATABASE_PATH, CACHE_DATABASE_PATH
 
 
 def get_connection() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(DATABASE_PATH))
+
+
+def get_cache_connection() -> duckdb.DuckDBPyConnection:
+    return duckdb.connect(str(CACHE_DATABASE_PATH))
 
 
 def init_db() -> None:
@@ -63,6 +67,13 @@ def init_db() -> None:
         )
     """)
 
+    con.close()
+
+
+def init_cache_db() -> None:
+    """Create strategy_cache table in the dedicated cache DB.
+    On first run, migrates existing rows from trading.duckdb if any."""
+    con = get_cache_connection()
     con.execute("""
         CREATE TABLE IF NOT EXISTS strategy_cache (
             symbol      VARCHAR NOT NULL,
@@ -75,5 +86,21 @@ def init_db() -> None:
             PRIMARY KEY (symbol, exchange, max_levels, tp_atr, level_atr)
         )
     """)
+
+    # One-time migration: copy rows from trading.duckdb if the cache DB is empty
+    count = con.execute("SELECT COUNT(*) FROM strategy_cache").fetchone()[0]
+    if count == 0:
+        try:
+            old_con = get_connection()
+            rows = old_con.execute(
+                "SELECT symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json"
+                " FROM strategy_cache"
+            ).fetchall()
+            old_con.close()
+            if rows:
+                con.executemany("INSERT INTO strategy_cache VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+                print(f"[init_cache_db] {len(rows)} entrées migrées depuis trading.duckdb")
+        except Exception as exc:
+            print(f"[init_cache_db] Migration ignorée : {exc}")
 
     con.close()

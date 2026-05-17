@@ -28,7 +28,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from app.database import get_connection
+from app.database import get_connection, get_cache_connection
 
 # In-memory job store: job_id -> {"queue": asyncio.Queue, "result": dict | None}
 _jobs: dict[str, dict] = {}
@@ -283,7 +283,7 @@ def _load_cache(
     symbol: str, exchange: str, max_levels: int, tp_atr: float, level_atr: float
 ) -> dict | None:
     """Return cached result dict (with from_cache/cached_at keys) or None."""
-    con = get_connection()
+    con = get_cache_connection()
     try:
         row = con.execute(
             """
@@ -315,7 +315,7 @@ def _save_cache(
     }
     to_store["cache_version"] = _STRATEGY_CACHE_VERSION
     result_json = json.dumps(to_store)
-    con = get_connection()
+    con = get_cache_connection()
     try:
         con.execute(
             "DELETE FROM strategy_cache WHERE symbol=? AND exchange=? AND max_levels=? AND tp_atr=? AND level_atr=?",

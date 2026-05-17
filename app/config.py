@@ -8,6 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
 DATABASE_PATH = BASE_DIR / os.getenv("DATABASE_PATH", "data/trading.duckdb")
+CACHE_DATABASE_PATH = BASE_DIR / os.getenv("CACHE_DATABASE_PATH", "data/strategy_cache.duckdb")
 
 TIMEFRAMES = [
     {"value": "1min",   "label": "1 minute"},

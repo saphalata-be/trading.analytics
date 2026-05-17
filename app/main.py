@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 
-from app.database import init_db
+from app.database import init_db, init_cache_db
 from app.routers import data_management, strategy
 
 app = FastAPI(title="Trading Analytics")
@@ -34,6 +34,7 @@ strategy.templates.env.globals["_fmt_duration"] = _fmt_duration
 @app.on_event("startup")
 async def startup():
     init_db()
+    init_cache_db()
 
 
 @app.get("/")
