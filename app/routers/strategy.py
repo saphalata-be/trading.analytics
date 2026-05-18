@@ -304,6 +304,49 @@ def _load_cache(
     return result
 
 
+def _load_all_instruments_from_cache(
+    instruments: list[dict],
+    max_levels: int,
+    tp_atr: float,
+    level_atr: float,
+) -> dict | None:
+    """Rebuild the aggregate view directly from per-instrument cache entries."""
+    all_results: dict[str, dict] = {}
+    total_cycles = 0
+    latest_cached_at = None
+
+    for inst in instruments:
+        cached = _load_cache(inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr)
+        if cached is None or cached.get("error") or cached.get("results") is None:
+            return None
+
+        all_results[f"{inst['symbol']}|{inst['exchange']}"] = {
+            "symbol": inst["symbol"],
+            "exchange": inst["exchange"],
+            "stats": cached["results"],
+            "total_cycles": cached.get("total_cycles", 0),
+        }
+        total_cycles += cached.get("total_cycles", 0)
+
+        cached_at = cached.get("cached_at")
+        if cached_at is not None and (latest_cached_at is None or cached_at > latest_cached_at):
+            latest_cached_at = cached_at
+
+    return {
+        "all_results": all_results,
+        "results": None,
+        "error": None if all_results else "Aucune donnée 1min disponible.",
+        "selected_symbol": "__ALL__",
+        "selected_exchange": "",
+        "max_levels": max_levels,
+        "tp_atr": tp_atr,
+        "level_atr": level_atr,
+        "total_cycles": total_cycles,
+        "from_cache": True,
+        "cached_at": latest_cached_at,
+    }
+
+
 def _save_cache(
     symbol: str, exchange: str, max_levels: int, tp_atr: float, level_atr: float, result: dict
 ) -> None:
@@ -365,6 +408,23 @@ async def _run_simulation_job(
             total_cycles_all = 0
             total = len(instruments)
             for idx, inst in enumerate(instruments):
+                cached = _load_cache(inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr)
+                if cached is not None and not cached.get("error") and cached.get("results") is not None:
+                    all_results[f"{inst['symbol']}|{inst['exchange']}"] = {
+                        "symbol": inst["symbol"],
+                        "exchange": inst["exchange"],
+                        "stats": cached["results"],
+                        "total_cycles": cached.get("total_cycles", 0),
+                    }
+                    total_cycles_all += cached.get("total_cycles", 0)
+                    await q.put({
+                        "type": "progress",
+                        "current": idx + 1,
+                        "total": total,
+                        "label": inst["symbol"],
+                    })
+                    continue
+
                 await q.put({
                     "type": "progress",
                     "current": idx + 1,
@@ -375,10 +435,26 @@ async def _run_simulation_job(
                     None, _simulate_cycles_new_conn, inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr
                 )
                 if cycles:
+                    instrument_result = {
+                        "all_results": None,
+                        "results": _aggregate(cycles, tp_atr, level_atr),
+                        "error": None,
+                        "selected_symbol": inst["symbol"],
+                        "selected_exchange": inst["exchange"],
+                        "max_levels": max_levels,
+                        "tp_atr": tp_atr,
+                        "level_atr": level_atr,
+                        "total_cycles": len(cycles),
+                    }
+                    try:
+                        _save_cache(inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr, instrument_result)
+                    except Exception:  # noqa: BLE001
+                        pass
+
                     all_results[f"{inst['symbol']}|{inst['exchange']}"] = {
                         "symbol": inst["symbol"],
                         "exchange": inst["exchange"],
-                        "stats": _aggregate(cycles, tp_atr, level_atr),
+                        "stats": instrument_result["results"],
                         "total_cycles": len(cycles),
                     }
                     total_cycles_all += len(cycles)
@@ -430,7 +506,7 @@ async def _run_simulation_job(
         }
     finally:
         result = _jobs[job_id].get("result")
-        if result and not result.get("error"):
+        if result and not result.get("error") and symbol != "__ALL__":
             try:
                 _save_cache(symbol, exchange, max_levels, tp_atr, level_atr, result)
             except Exception:  # noqa: BLE001
@@ -477,7 +553,10 @@ async def strategy_run(
     instruments = _get_instruments()
 
     if not force:
-        cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr)
+        if symbol == "__ALL__":
+            cached = _load_all_instruments_from_cache(instruments, max_levels, tp_atr, level_atr)
+        else:
+            cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr)
         if cached is not None:
             return templates.TemplateResponse(
                 "strategy.html",

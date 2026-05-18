@@ -67,6 +67,18 @@ class ParamCombo:
     level_atr: float
 
 
+def _chunk_param_combos(combos: list[ParamCombo], workers: int) -> list[list[ParamCombo]]:
+    """Split a symbol's parameter space into a few medium-sized tasks."""
+    if not combos:
+        return []
+
+    # Keep task count high enough to avoid end-of-run worker starvation,
+    # but low enough to avoid copying the same instrument data excessively.
+    target_batches = max(1, min(6, workers))
+    chunk_size = max(1, (len(combos) + target_batches - 1) // target_batches)
+    return [combos[i : i + chunk_size] for i in range(0, len(combos), chunk_size)]
+
+
 # ---------------------------------------------------------------------------
 # Fast simulation helpers (primitive types only — no datetime in workers)
 # ---------------------------------------------------------------------------
@@ -238,10 +250,10 @@ def _worker_instrument(
     combos: list[ParamCombo],
 ) -> None:
     """
-    Process all parameter combos for one instrument.
+    Process a batch of parameter combos for one instrument.
     Receives only primitive types; no DB access, no datetime.
     Each result is pushed to _result_queue immediately so the main process
-    can save it without waiting for all combos to complete.
+    can save it without waiting for the full symbol to complete.
     """
     for combo in combos:
         try:
@@ -490,10 +502,10 @@ def main() -> None:
     errors = 0
     total_jobs = 0  # refined once we know how many are skipped
 
-    # Load data and dispatch workers eagerly: one future per instrument.
+    # Load data and dispatch workers eagerly: a few futures per instrument.
     # The main process is the only process that touches the DB.
     # A Manager queue lets workers push each result immediately so the main
-    # process can save it without waiting for all combos of a symbol to finish.
+    # process can save it without waiting for the full symbol to finish.
     _manager = Manager()
     result_queue = _manager.Queue()
     start_time = time.monotonic()
@@ -506,6 +518,17 @@ def main() -> None:
             futures: dict = {}
             try:
                 for i, (symbol, exchange) in enumerate(instruments, 1):
+                    if not args.force:
+                        combos = [c for c in all_combos if not _cache_exists(symbol, exchange, c)]
+                    else:
+                        combos = list(all_combos)
+
+                    skipped = n_combos - len(combos)
+                    if skipped:
+                        print(f"    → {skipped} déjà en cache, {len(combos)} à calculer", flush=True)
+                    if not combos:
+                        continue
+
                     print(f"  Chargement [{i}/{len(instruments)}] {symbol} ({exchange})...", flush=True)
                     # Open and close a connection per instrument so that trading.duckdb
                     # is only locked for the duration of the SQL queries (~seconds each).
@@ -517,61 +540,58 @@ def main() -> None:
                     finally:
                         load_con.close()
 
-                    if not args.force:
-                        combos = [c for c in all_combos if not _cache_exists(symbol, exchange, c)]
-                    else:
-                        combos = list(all_combos)
-
-                    skipped = n_combos - len(combos)
-                    if skipped:
-                        print(f"    → {skipped} déjà en cache, {len(combos)} à calculer", flush=True)
-                    if combos:
-                        total_jobs += len(combos)
+                    total_jobs += len(combos)
+                    combo_batches = _chunk_param_combos(combos, args.workers)
+                    if len(combo_batches) > 1:
+                        print(
+                            f"    → découpé en {len(combo_batches)} lots de ~{len(combo_batches[0])} calculs",
+                            flush=True,
+                        )
+                    for combo_batch in combo_batches:
                         future = pool.submit(
                             _worker_instrument,
                             symbol, exchange,
                             bars_open, bars_high, bars_low,
                             bar_ts_min, hourly_indices, atr50_by_idx,
-                            combos,
+                            combo_batch,
                         )
                         futures[future] = (symbol, exchange)
 
-                if not futures:
-                    print("\nTout est déjà en cache. Utilisez --force pour recalculer.")
-                    return
+                if futures:
+                    print(f"\nCalcul de {total_jobs} combinaisons en cours...\n")
 
-                print(f"\nCalcul de {total_jobs} combinaisons en cours...\n")
+                    while done_jobs < total_jobs:
+                        try:
+                            symbol, exchange, combo, result, error = result_queue.get(timeout=1.0)
+                        except Exception:
+                            # Timeout — bail out if all workers finished unexpectedly
+                            if all(f.done() for f in futures):
+                                break
+                            continue
 
-                while done_jobs < total_jobs:
-                    try:
-                        symbol, exchange, combo, result, error = result_queue.get(timeout=1.0)
-                    except Exception:
-                        # Timeout — bail out if all workers finished unexpectedly
-                        if all(f.done() for f in futures):
-                            break
-                        continue
+                        done_jobs += 1
+                        elapsed = time.monotonic() - start_time
+                        rate = done_jobs / elapsed if elapsed > 0 else 0
+                        remaining = (total_jobs - done_jobs) / rate if rate > 0 else float("inf")
+                        pct = done_jobs / total_jobs * 100
 
-                    done_jobs += 1
-                    elapsed = time.monotonic() - start_time
-                    rate = done_jobs / elapsed if elapsed > 0 else 0
-                    remaining = (total_jobs - done_jobs) / rate if rate > 0 else float("inf")
-                    pct = done_jobs / total_jobs * 100
+                        if error:
+                            errors += 1
+                            status = f"ERREUR  {error}"
+                        else:
+                            _save(symbol, exchange, combo, result)
+                            status = "OK"
 
-                    if error:
-                        errors += 1
-                        status = f"ERREUR  {error}"
-                    else:
-                        _save(symbol, exchange, combo, result)
-                        status = "OK"
-
-                    print(
-                        f"[{pct:5.1f}%] {done_jobs}/{total_jobs}  "
-                        f"{symbol:<12} ML={combo.max_levels:<3} "
-                        f"TP={combo.tp_atr:<4} LA={combo.level_atr:<4}  "
-                        f"{status:<60}  "
-                        f"~{remaining/60:.1f} min restantes",
-                        flush=True,
-                    )
+                        print(
+                            f"[{pct:5.1f}%] {done_jobs}/{total_jobs}  "
+                            f"{symbol:<12} ML={combo.max_levels:<3} "
+                            f"TP={combo.tp_atr:<4} LA={combo.level_atr:<4}  "
+                            f"{status:<60}  "
+                            f"~{remaining/60:.1f} min restantes",
+                            flush=True,
+                        )
+                else:
+                    print("\nTout est déjà en cache au niveau instrument.")
             finally:
                 pass
     finally:
