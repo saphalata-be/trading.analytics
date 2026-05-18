@@ -1041,9 +1041,9 @@ def _get_instruments() -> list[dict]:
     try:
         rows = con.execute(
             """
-            SELECT DISTINCT o.symbol, o.exchange, w.instrument_type
+            SELECT DISTINCT o.symbol, o.exchange, i.type
             FROM ohlcv o
-            JOIN watchlist w ON w.symbol = o.symbol AND w.exchange = o.exchange
+            LEFT JOIN instruments i ON i.symbol = o.symbol AND i.exchange = o.exchange
             WHERE o.timeframe = '1min'
             ORDER BY o.symbol
             """

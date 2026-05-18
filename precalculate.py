@@ -429,25 +429,25 @@ def main() -> None:
         "--max-levels",
         nargs="+",
         type=int,
-        default=[5, 10, 15, 20, 30, 100],
+        default=[5, 10, 15, 20],
         metavar="N",
-        help="List of max_levels values to test (default: 5 10 15 20 30 100)",
+        help="List of max_levels values to test (default: 5 10 15 20)",
     )
     parser.add_argument(
         "--tp-atr",
         nargs="+",
         type=float,
-        default=[0.25, 0.5, 0.75, 1.0],
+        default=[0.25, 0.5, 0.75, 1.0, 1.5],
         metavar="F",
-        help="List of tp_atr values to test (default: 0.25 0.5 0.75 1.0)",
+        help="List of tp_atr values to test (default: 0.25 0.5 0.75 1.0 1.5)",
     )
     parser.add_argument(
         "--level-atr",
         nargs="+",
         type=float,
-        default=[0.5, 1.0, 1.5, 2.0],
+        default=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0],
         metavar="F",
-        help="List of level_atr values to test (default: 0.5 1.0 1.5 2.0)",
+        help="List of level_atr values to test (default: 0.25 0.5 0.75 1.0 1.5 2.0)",
     )
     parser.add_argument(
         "--symbol",
@@ -464,9 +464,9 @@ def main() -> None:
     parser.add_argument(
         "--workers",
         type=int,
-        default=24,
+        default=20,
         metavar="N",
-        help="Number of parallel workers (default: 4)",
+        help="Number of parallel workers (default: 20)",
     )
     parser.add_argument(
         "--force",

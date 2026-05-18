@@ -49,7 +49,7 @@
         <input type="hidden" name="exchange" id="exchange-input"
                value="{% if selected_symbol == '__ALL__' %}{% elif selected_exchange %}{{ selected_exchange }}{% else %}{{ instruments[0].exchange if instruments else '' }}{% endif %}">
         {% else %}
-        <p class="text-sm text-amber-400">Aucun instrument avec données 1min dans la watchlist.</p>
+         <p class="text-sm text-amber-400">Aucun instrument avec données 1min importées.</p>
         {% endif %}
       </div>
 

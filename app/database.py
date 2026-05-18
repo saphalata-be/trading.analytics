@@ -70,9 +70,21 @@ def init_db() -> None:
     con.close()
 
 
+def reset_trading_tables() -> None:
+    con = get_connection()
+    try:
+        con.execute("DELETE FROM watchlist_timeframes")
+        con.execute("DELETE FROM watchlist")
+        con.execute("DELETE FROM instruments")
+        con.execute("DELETE FROM ohlcv")
+        con.execute("DROP TABLE IF EXISTS strategy_cache")
+    finally:
+        con.close()
+
+
 def init_cache_db() -> None:
     """Create strategy_cache table in the dedicated cache DB.
-    On first run, migrates existing rows from trading.duckdb if any."""
+    Legacy migration from trading.duckdb is intentionally disabled."""
     con = get_cache_connection()
     con.execute("""
         CREATE TABLE IF NOT EXISTS mt5_symbols (
@@ -99,20 +111,12 @@ def init_cache_db() -> None:
         )
     """)
 
-    # One-time migration: copy rows from trading.duckdb if the cache DB is empty
-    count = con.execute("SELECT COUNT(*) FROM strategy_cache").fetchone()[0]
-    if count == 0:
-        try:
-            old_con = get_connection()
-            rows = old_con.execute(
-                "SELECT symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json"
-                " FROM strategy_cache"
-            ).fetchall()
-            old_con.close()
-            if rows:
-                con.executemany("INSERT INTO strategy_cache VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
-                print(f"[init_cache_db] {len(rows)} entrées migrées depuis trading.duckdb")
-        except Exception as exc:
-            print(f"[init_cache_db] Migration ignorée : {exc}")
-
     con.close()
+
+
+def reset_strategy_cache() -> None:
+    con = get_cache_connection()
+    try:
+        con.execute("DELETE FROM strategy_cache")
+    finally:
+        con.close()

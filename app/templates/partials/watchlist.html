@@ -1,20 +1,8 @@
 {% if watchlist %}
 <div class="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
   <div class="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
-    <h2 class="text-base font-semibold text-gray-200">Instruments suivis</h2>
-    <div class="flex items-center gap-3">
-      <button onclick="updateAll()"
-              id="update-all-btn"
-              class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600
-                     text-white text-xs font-medium rounded-lg transition-colors">
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-        </svg>
-        Mettre à jour
-      </button>
-      <span class="text-xs text-gray-500">{{ watchlist|length }} instrument(s)</span>
-    </div>
+    <h2 class="text-base font-semibold text-gray-200">Instruments importés</h2>
+    <span class="text-xs text-gray-500">{{ watchlist|length }} instrument(s)</span>
   </div>
 
   <div class="divide-y divide-gray-800">
@@ -40,20 +28,6 @@
           </span>
           {% endif %}
         </div>
-
-        <!-- Remove from watchlist -->
-        <button
-          hx-delete="/data/watchlist/{{ item.id }}"
-          hx-target="#watchlist-container"
-          hx-swap="innerHTML"
-          hx-confirm="Supprimer {{ item.symbol }} et toutes ses données ?"
-          class="text-gray-600 hover:text-red-400 transition-colors p-1 rounded"
-          title="Supprimer">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-          </svg>
-        </button>
       </div>
 
       <!-- Timeframes table -->
@@ -67,12 +41,12 @@
               <th class="pb-1.5 pr-4 font-medium">Dernière date</th>
               <th class="pb-1.5 pr-4 font-medium">Barres</th>
               <th class="pb-1.5 pr-4 font-medium">Statut</th>
-              <th class="pb-1.5 font-medium">Actions</th>
+              <th class="pb-1.5 font-medium">Dernier import</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-800/50">
             {% for tf in item.timeframes %}
-            <tr id="tf-row-{{ item.id }}-{{ tf.timeframe }}" data-watchlist-id="{{ item.id }}" data-timeframe="{{ tf.timeframe }}" class="hover:bg-gray-800/30">
+            <tr id="tf-row-{{ item.id }}-{{ tf.timeframe }}" class="hover:bg-gray-800/30">
               <td class="py-2 pr-4 font-mono font-semibold text-gray-300">{{ tf.timeframe }}</td>
               <td class="py-2 pr-4 text-gray-400 font-mono">
                 {{ tf.first_date if tf.first_date else '—' }}
@@ -96,43 +70,8 @@
                   {% else %}En attente{% endif %}
                 </span>
               </td>
-              <td class="py-2">
-                <div class="flex items-center gap-2">
-                  <!-- Download button -->
-                  <button
-                    onclick="startDownload({{ item.id }}, '{{ tf.timeframe }}')"
-                    id="dl-btn-{{ item.id }}-{{ tf.timeframe }}"
-                    class="flex items-center gap-1 px-2 py-1 bg-indigo-700 hover:bg-indigo-600
-                           text-white text-xs font-medium rounded transition-colors"
-                    title="Télécharger l'historique complet">
-                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                    </svg>
-                    Télécharger
-                  </button>
-                  <!-- Progress message -->
-                  <span id="tf-progress-{{ item.id }}-{{ tf.timeframe }}"
-                        class="text-xs
-                          {%- if tf.status == 'error' %} text-red-400
-                          {%- elif tf.status == 'downloading' %} text-gray-500
-                          {%- else %} text-gray-500 hidden{%- endif %}">
-                    {%- if tf.status == 'error' %}Erreur
-                    {%- elif tf.status == 'downloading' %}En cours...
-                    {%- endif %}</span>
-                  <!-- Remove timeframe -->
-                  <button
-                    hx-delete="/data/watchlist/{{ item.id }}/timeframe/{{ tf.timeframe }}"
-                    hx-target="#watchlist-container"
-                    hx-swap="innerHTML"
-                    hx-confirm="Supprimer le timeframe {{ tf.timeframe }} et ses données ?"
-                    class="text-gray-600 hover:text-red-400 transition-colors p-1 rounded"
-                    title="Supprimer ce timeframe">
-                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                  </button>
-                </div>
+              <td class="py-2 pr-4 text-gray-400 font-mono">
+                {{ tf.last_download if tf.last_download else '—' }}
               </td>
             </tr>
             {% endfor %}
@@ -140,28 +79,6 @@
         </table>
       </div>
       {% endif %}
-
-      <!-- Add timeframe -->
-      <form hx-post="/data/watchlist/{{ item.id }}/timeframe"
-            hx-target="#watchlist-container"
-            hx-swap="innerHTML"
-            class="flex items-center gap-2">
-        <select name="timeframe"
-                class="bg-gray-800 border border-gray-700 text-gray-300 text-xs rounded-lg px-3 py-1.5
-                       focus:outline-none focus:ring-2 focus:ring-indigo-500">
-          {% for tf in timeframes %}
-          <option value="{{ tf.value }}">{{ tf.label }}</option>
-          {% endfor %}
-        </select>
-        <button type="submit"
-                class="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600
-                       text-gray-200 text-xs font-medium rounded-lg transition-colors">
-          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-          </svg>
-          Ajouter timeframe
-        </button>
-      </form>
 
     </div>
     {% endfor %}
@@ -174,98 +91,6 @@
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
           d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
   </svg>
-  <p class="text-gray-500 text-sm">Aucun instrument suivi. Recherchez un instrument ci-dessus pour commencer.</p>
+  <p class="text-gray-500 text-sm">Aucune donnée importée. Lancez une réimportation complète depuis TickStory.</p>
 </div>
 {% endif %}
-
-<script>
-function startDownload(watchlistId, timeframe, onDone) {
-  const btn = document.getElementById(`dl-btn-${watchlistId}-${timeframe}`);
-  const progress = document.getElementById(`tf-progress-${watchlistId}-${timeframe}`);
-  const statusEl = document.getElementById(`tf-status-${watchlistId}-${timeframe}`);
-
-  btn.disabled = true;
-  btn.classList.add('opacity-50', 'cursor-not-allowed');
-  progress.classList.remove('hidden');
-  progress.classList.remove('text-red-400');
-  progress.textContent = 'Connexion...';
-
-  // Show "queued" state immediately — will be updated once SSE events arrive
-  statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300';
-  statusEl.textContent = 'En attente';
-
-  const evtSource = new EventSource(`/data/watchlist/${watchlistId}/download/${timeframe}`);
-
-  evtSource.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-
-    if (data.type === 'status') {
-      progress.textContent = data.message;
-      // Distinguish "queued" (waiting in line) from "downloading" (worker active)
-      const isQueued = data.message.startsWith('En attente');
-      if (isQueued) {
-        statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300';
-        statusEl.textContent = 'En attente';
-      } else {
-        statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-yellow-900/60 text-yellow-300';
-        statusEl.textContent = 'En cours...';
-      }
-    } else if (data.type === 'done') {
-      evtSource.close();
-      progress.classList.add('hidden');
-      btn.disabled = false;
-      btn.classList.remove('opacity-50', 'cursor-not-allowed');
-
-      statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-green-900/60 text-green-300';
-      statusEl.textContent = 'Téléchargé';
-
-      if (onDone) { onDone(); } else { setTimeout(() => location.reload(), 500); }
-    } else if (data.type === 'error') {
-      evtSource.close();
-      progress.textContent = data.message;
-      progress.classList.add('text-red-400');
-      btn.disabled = false;
-      btn.classList.remove('opacity-50', 'cursor-not-allowed');
-
-      statusEl.className = 'px-2 py-0.5 rounded text-xs font-medium bg-red-900/60 text-red-300';
-      statusEl.textContent = 'Erreur';
-
-      if (onDone) { onDone(); }
-    }
-  };
-
-  evtSource.onerror = function() {
-    evtSource.close();
-    progress.textContent = 'Erreur de connexion';
-    progress.classList.add('text-red-400');
-    btn.disabled = false;
-    btn.classList.remove('opacity-50', 'cursor-not-allowed');
-
-    if (onDone) { onDone(); }
-  };
-}
-
-function updateAll() {
-  const btn = document.getElementById('update-all-btn');
-  btn.disabled = true;
-  btn.classList.add('opacity-50', 'cursor-not-allowed');
-
-  const rows = document.querySelectorAll('tr[data-watchlist-id]');
-  let pending = rows.length;
-
-  if (pending === 0) {
-    btn.disabled = false;
-    btn.classList.remove('opacity-50', 'cursor-not-allowed');
-    return;
-  }
-
-  const onEachDone = () => {
-    pending--;
-    if (pending === 0) { setTimeout(() => location.reload(), 500); }
-  };
-
-  rows.forEach(row => {
-    startDownload(parseInt(row.dataset.watchlistId), row.dataset.timeframe, onEachDone);
-  });
-}
-</script>

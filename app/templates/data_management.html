@@ -6,86 +6,63 @@
 {% block content %}
 <div class="p-6 max-w-7xl mx-auto space-y-8">
 
-  <!-- Page header -->
   <div>
     <h1 class="text-2xl font-bold text-white">Gestion des données</h1>
-    <p class="text-gray-400 text-sm mt-1">Recherchez et ajoutez des instruments à suivre, puis téléchargez leur historique.</p>
+    <p class="text-gray-400 text-sm mt-1">Import complet depuis les fichiers TickStory, sans sélection manuelle d'instruments.</p>
   </div>
 
-  <!-- ------------------------------------------------------------------ -->
-  <!-- Search panel                                                         -->
-  <!-- ------------------------------------------------------------------ -->
   <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
-    <h2 class="text-base font-semibold text-gray-200">Rechercher un instrument</h2>
-
-    <div class="flex flex-wrap gap-3">
-      <!-- Type filter -->
-      <select id="instrument-type" name="type"
-              class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2
-                     focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        <option value="">Tous les types</option>
-        <option value="Forex">Forex</option>
-        <option value="Index">Indices</option>
-        <option value="Commodity">Commodities</option>
-        <option value="ETF">ETF</option>
-        <option value="Stock">Actions</option>
-        <option value="Cryptocurrency">Crypto</option>
-      </select>
-
-      <!-- Search input -->
-      <div class="relative flex-1 min-w-48">
-        <input
-          id="search-input"
-          type="text"
-          placeholder="Symbole ou nom (ex: EUR/USD, Gold, SPX...)"
-          autocomplete="off"
-          class="w-full bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg
-                 pl-9 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-500"
-          hx-get="/data/search"
-          hx-trigger="input changed delay:400ms, keyup[key=='Enter']"
-          hx-target="#search-results"
-          hx-include="#instrument-type"
-          hx-vals='js:{"q": document.getElementById("search-input").value, "type": document.getElementById("instrument-type").value}'
-          name="q"
-        />
-        <svg class="absolute left-2.5 top-2.5 w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
-        </svg>
-        <!-- Loading spinner -->
-        <svg class="htmx-indicator absolute right-2.5 top-2.5 w-4 h-4 text-indigo-400 animate-spin"
-             fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-          <path class="opacity-75" fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div class="space-y-2">
+        <h2 class="text-base font-semibold text-gray-200">Source TickStory</h2>
+        <p class="text-sm text-gray-400">Tous les fichiers nommés <span class="font-mono text-gray-300">&lt;symbole&gt;_&lt;timeframe&gt;.csv</span> sont importés dans la base.</p>
+        <div class="text-xs text-gray-500 space-y-1">
+          <div>Répertoire: <span class="font-mono text-gray-300">{{ source_path }}</span></div>
+          <div>Exchange interne: <span class="font-mono text-gray-300">{{ source_exchange }}</span></div>
+          <div>Fichiers détectés: <span class="font-mono text-gray-300">{{ available_files_count }}</span> · Instruments: <span class="font-mono text-gray-300">{{ available_instruments_count }}</span> · Timeframes: <span class="font-mono text-gray-300">{{ available_timeframes|join(', ') if available_timeframes else '—' }}</span></div>
+        </div>
       </div>
+
+      <form method="post" action="/data/sync" class="flex flex-col gap-2 min-w-72">
+        <button type="submit"
+                class="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500">
+          Réimporter toute la base
+        </button>
+        <p class="text-xs text-amber-300">Cette action vide les tables de marché et invalide le cache de stratégie avant de recharger tous les CSV détectés.</p>
+      </form>
     </div>
 
-    <!-- Results -->
-    <div id="search-results"></div>
+    <div class="grid gap-4 md:grid-cols-3">
+      <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+        <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Instruments importés</div>
+        <div class="mt-2 text-2xl font-semibold text-white">{{ db_summary.instruments }}</div>
+      </div>
+      <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+        <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Timeframes importés</div>
+        <div class="mt-2 text-2xl font-semibold text-white">{{ db_summary.timeframes }}</div>
+      </div>
+      <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+        <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Barres OHLCV</div>
+        <div class="mt-2 text-2xl font-semibold text-white">{{ '{:,}'.format(db_summary.rows).replace(',', ' ') }}</div>
+      </div>
+    </div>
   </div>
 
-  <!-- ------------------------------------------------------------------ -->
-  <!-- Watchlist                                                            -->
-  <!-- ------------------------------------------------------------------ -->
+  {% if message %}
+  <div class="bg-green-900/30 border border-green-700 text-green-200 rounded-xl px-5 py-4 text-sm">
+    {{ message }}
+  </div>
+  {% endif %}
+
+  {% if error %}
+  <div class="bg-red-900/30 border border-red-700 text-red-200 rounded-xl px-5 py-4 text-sm">
+    {{ error }}
+  </div>
+  {% endif %}
+
   <div id="watchlist-container">
     {% include "partials/watchlist.html" %}
   </div>
 
 </div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-  // Re-trigger search when type filter changes
-  document.getElementById('instrument-type').addEventListener('change', function() {
-    const input = document.getElementById('search-input');
-    if (input.value.length >= 2) {
-      htmx.trigger(input, 'input');
-    } else {
-      document.getElementById('search-results').innerHTML = '';
-    }
-  });
-</script>
 {% endblock %}
