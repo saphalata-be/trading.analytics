@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+{% set active_page = "strategy" %}
+
+{% block title %}Dashboard cache stratégie — Trading Analytics{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-7xl space-y-8 p-6">
+
+  <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+    <div class="space-y-2">
+      <div class="inline-flex items-center gap-2 rounded-full border border-cyan-800 bg-cyan-950/40 px-3 py-1 text-xs font-medium text-cyan-300">
+        Cache des précalculs
+      </div>
+      <div>
+        <h1 class="text-2xl font-bold text-white">Dashboard cache stratégie</h1>
+        <p class="mt-1 max-w-3xl text-sm text-gray-400">
+          Vue d'ensemble de toutes les combinaisons déjà précalculées dans le cache, avec classement global, zoom par paramètres et meilleur setup par instrument.
+        </p>
+      </div>
+    </div>
+    <a href="/strategy/"
+       class="inline-flex items-center justify-center rounded-lg border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-medium text-gray-200 transition-colors hover:bg-gray-800">
+      Retour aux simulations
+    </a>
+  </div>
+
+  <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+    <form method="get" action="/strategy/dashboard" class="flex flex-wrap items-end gap-4">
+      <div class="flex min-w-52 flex-col gap-1">
+        <label class="text-xs text-gray-400">Direction analysée</label>
+        <select name="direction"
+                class="rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500">
+          {% for option in direction_options %}
+          <option value="{{ option.value }}" {% if option.value == direction %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="flex min-w-56 flex-col gap-1">
+        <label class="text-xs text-gray-400">Classement</label>
+        <select name="metric"
+                class="rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-cyan-500">
+          {% for option in metric_options %}
+          <option value="{{ option.value }}" {% if option.value == metric %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <button type="submit"
+              class="rounded-lg bg-cyan-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-cyan-500">
+        Mettre à jour
+      </button>
+    </form>
+
+    <div class="mt-4 text-xs text-gray-500">
+      Lecture en direct de la base de cache. Aucun recalcul n'est déclenché depuis cet écran.
+    </div>
+  </div>
+
+  {% if summary.entries_count == 0 %}
+  <div class="rounded-2xl border border-amber-700 bg-amber-950/30 px-5 py-4 text-sm text-amber-200">
+    Aucune entrée valide trouvée dans le cache stratégie. Lance d'abord quelques précalculs avec <span class="font-mono">python precalculate.py</span>.
+  </div>
+  {% else %}
+
+  <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+      <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Entrées valides</div>
+      <div class="mt-3 text-3xl font-semibold text-white">{{ summary.entries_count }}</div>
+      <div class="mt-1 text-sm text-gray-500">lignes exploitables dans le cache</div>
+    </div>
+    <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+      <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Instruments</div>
+      <div class="mt-3 text-3xl font-semibold text-white">{{ summary.instrument_count }}</div>
+      <div class="mt-1 text-sm text-gray-500">actifs couverts par les précalculs</div>
+    </div>
+    <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+      <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Combinaisons</div>
+      <div class="mt-3 text-3xl font-semibold text-white">{{ summary.combo_count }}</div>
+      <div class="mt-1 text-sm text-gray-500">jeux de paramètres distincts</div>
+    </div>
+    <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+      <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Dernier calcul</div>
+      <div class="mt-3 text-lg font-semibold text-white">
+        {% if summary.latest_computed_at %}{{ summary.latest_computed_at.strftime('%d/%m/%Y %H:%M') }}{% else %}—{% endif %}
+      </div>
+      <div class="mt-1 text-sm text-gray-500">fraîcheur maximale du cache</div>
+    </div>
+  </div>
+
+  <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5 text-sm text-gray-400">
+    <div class="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+      <div>
+        Analyse en cours: <span class="font-medium text-white">{{ direction_label }}</span>
+        · Classement: <span class="font-medium text-white">{{ metric_label }}</span>
+      </div>
+      <div class="text-xs text-gray-500">
+        Max levels: {{ summary.max_levels_values | join(', ') }}
+        · TP: {{ summary.tp_atr_values | join(', ') }}
+        · Espacement: {{ summary.level_atr_values | join(', ') }}
+      </div>
+    </div>
+  </div>
+
+  <div class="space-y-4">
+    <div class="flex items-center justify-between gap-4">
+      <div>
+        <h2 class="text-lg font-semibold text-white">Classement des combinaisons</h2>
+        <p class="text-sm text-gray-500">Top 25 selon la métrique sélectionnée. Clique sur une ligne pour voir le détail instrument par instrument.</p>
+      </div>
+    </div>
+
+    <div class="overflow-hidden rounded-2xl border border-gray-700 bg-gray-900">
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[1080px] text-sm">
+          <thead class="bg-gray-800/70 text-xs uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-4 py-3 text-left font-medium">Paramètres</th>
+              <th class="px-4 py-3 text-right font-medium">Instruments</th>
+              <th class="px-4 py-3 text-right font-medium">Cycles</th>
+              <th class="px-4 py-3 text-right font-medium">Positifs</th>
+              <th class="px-4 py-3 text-right font-medium">Réussite</th>
+              <th class="px-4 py-3 text-right font-medium">Niv. moy.</th>
+              <th class="px-4 py-3 text-right font-medium">Durée moy.</th>
+              <th class="px-4 py-3 text-right font-medium">Profit total</th>
+              <th class="px-4 py-3 text-right font-medium">Profit / inst.</th>
+              <th class="px-4 py-3 text-right font-medium">Action</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-800">
+            {% for row in leaderboard %}
+            {% set is_focus = focus_combo and row.max_levels == focus_combo.max_levels and row.tp_atr == focus_combo.tp_atr and row.level_atr == focus_combo.level_atr %}
+            <tr class="{% if is_focus %}bg-cyan-950/30{% else %}hover:bg-gray-800/40{% endif %}">
+              <td class="px-4 py-3">
+                <div class="font-medium text-white">ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }}</div>
+                <div class="text-xs text-gray-500">MAJ {{ row.latest_computed_at.strftime('%d/%m/%Y %H:%M') }}</div>
+              </td>
+              <td class="px-4 py-3 text-right font-mono text-white">{{ row.instruments_count }}</td>
+              <td class="px-4 py-3 text-right font-mono text-white">{{ row.direction_cycles }}</td>
+              <td class="px-4 py-3 text-right font-mono {% if row.positive_share is not none and row.positive_share >= 50 %}text-emerald-400{% elif row.positive_share is not none %}text-red-400{% else %}text-gray-500{% endif %}">
+                {% if row.positive_share is not none %}{{ '%.1f'|format(row.positive_share) }}%{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono {% if row.success_rate is not none and row.success_rate >= 50 %}text-emerald-400{% elif row.success_rate is not none %}text-red-400{% else %}text-gray-500{% endif %}">
+                {% if row.success_rate is not none %}{{ '%.2f'|format(row.success_rate) }}%{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono text-white">
+                {% if row.avg_levels_all is not none %}{{ '%.2f'|format(row.avg_levels_all) }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono text-white">
+                {% if row.avg_duration_all is not none %}{{ _fmt_duration(row.avg_duration_all) }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono {% if row.total_profit_atr >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
+                {{ '%.1f'|format(row.total_profit_atr) }}
+              </td>
+              <td class="px-4 py-3 text-right font-mono {% if row.avg_profit_per_instrument is not none and row.avg_profit_per_instrument >= 0 %}text-emerald-400{% elif row.avg_profit_per_instrument is not none %}text-red-400{% else %}text-gray-500{% endif %}">
+                {% if row.avg_profit_per_instrument is not none %}{{ '%.2f'|format(row.avg_profit_per_instrument) }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right">
+                <a href="/strategy/dashboard?direction={{ direction }}&metric={{ metric }}&focus_max_levels={{ row.max_levels }}&focus_tp_atr={{ row.tp_atr }}&focus_level_atr={{ row.level_atr }}"
+                   class="inline-flex items-center rounded-lg border border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-200 transition-colors hover:border-cyan-500 hover:text-cyan-300">
+                  Voir
+                </a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {% if focus_combo %}
+  <div class="grid gap-6 xl:grid-cols-[1.1fr,1.9fr]">
+    <div class="space-y-4">
+      <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+        <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Zoom paramètres</div>
+        <h2 class="mt-3 text-xl font-semibold text-white">ML {{ focus_combo.max_levels }} · TP {{ focus_combo.tp_atr }} · LA {{ focus_combo.level_atr }}</h2>
+        <p class="mt-2 text-sm text-gray-400">
+          Cette combinaison est affichée parce qu'elle ressort le mieux selon <span class="font-medium text-white">{{ metric_label }}</span>
+          pour <span class="font-medium text-white">{{ direction_label }}</span>.
+        </p>
+
+        <div class="mt-5 grid gap-3 sm:grid-cols-2">
+          <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <div class="text-xs text-gray-500">Profit total</div>
+            <div class="mt-2 text-2xl font-semibold {% if focus_combo.total_profit_atr >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
+              {{ '%.1f'|format(focus_combo.total_profit_atr) }} ATR
+            </div>
+          </div>
+          <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <div class="text-xs text-gray-500">Taux de réussite</div>
+            <div class="mt-2 text-2xl font-semibold {% if focus_combo.success_rate is not none and focus_combo.success_rate >= 50 %}text-emerald-400{% elif focus_combo.success_rate is not none %}text-red-400{% else %}text-gray-400{% endif %}">
+              {% if focus_combo.success_rate is not none %}{{ '%.2f'|format(focus_combo.success_rate) }}%{% else %}—{% endif %}
+            </div>
+          </div>
+          <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <div class="text-xs text-gray-500">Instruments positifs</div>
+            <div class="mt-2 text-2xl font-semibold text-white">
+              {% if focus_combo.positive_share is not none %}{{ '%.1f'|format(focus_combo.positive_share) }}%{% else %}—{% endif %}
+            </div>
+          </div>
+          <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <div class="text-xs text-gray-500">Cycles analysés</div>
+            <div class="mt-2 text-2xl font-semibold text-white">{{ focus_combo.direction_cycles }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+        <h3 class="text-sm font-semibold text-white">Lecture rapide</h3>
+        <div class="mt-3 space-y-2 text-sm text-gray-400">
+          <div>{{ focus_combo.instruments_count }} instruments ont un résultat exploitable sur cette combinaison.</div>
+          <div>{{ focus_combo.completed }} cycles TP, {{ focus_combo.max_levels_closed }} cycles stoppés par max levels, {{ focus_combo.incomplete }} cycles encore ouverts.</div>
+          <div>Durée moyenne: {% if focus_combo.avg_duration_all is not none %}{{ _fmt_duration(focus_combo.avg_duration_all) }}{% else %}—{% endif %} · Niveaux moyens: {% if focus_combo.avg_levels_all is not none %}{{ '%.2f'|format(focus_combo.avg_levels_all) }}{% else %}—{% endif %}</div>
+          <div>Dernière mise à jour: {{ focus_combo.latest_computed_at.strftime('%d/%m/%Y %H:%M') }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="space-y-4">
+      <div>
+        <h2 class="text-lg font-semibold text-white">Détail par instrument</h2>
+        <p class="text-sm text-gray-500">Trié selon {{ metric_label|lower }} pour la combinaison sélectionnée.</p>
+      </div>
+      <div class="overflow-hidden rounded-2xl border border-gray-700 bg-gray-900">
+        <div class="max-h-[740px] overflow-auto">
+          <table class="w-full min-w-[840px] text-sm">
+            <thead class="sticky top-0 bg-gray-800/95 text-xs uppercase tracking-wide text-gray-500 backdrop-blur">
+              <tr>
+                <th class="px-4 py-3 text-left font-medium">Instrument</th>
+                <th class="px-4 py-3 text-right font-medium">Cycles</th>
+                <th class="px-4 py-3 text-right font-medium">Réussite</th>
+                <th class="px-4 py-3 text-right font-medium">Niv. moy.</th>
+                <th class="px-4 py-3 text-right font-medium">Durée moy.</th>
+                <th class="px-4 py-3 text-right font-medium">Profit</th>
+                <th class="px-4 py-3 text-right font-medium">MAJ</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+              {% for row in focus_instruments %}
+              {% set s = row.stats %}
+              <tr class="hover:bg-gray-800/40">
+                <td class="px-4 py-3">
+                  <div class="font-medium text-white">{{ row.symbol }}</div>
+                  <div class="text-xs text-gray-500">{{ row.exchange }}</div>
+                </td>
+                <td class="px-4 py-3 text-right font-mono text-white">{{ row.direction_cycles }}</td>
+                <td class="px-4 py-3 text-right font-mono {% if s.success_rate is not none and s.success_rate >= 50 %}text-emerald-400{% elif s.success_rate is not none %}text-red-400{% else %}text-gray-500{% endif %}">
+                  {% if s.success_rate is not none %}{{ '%.2f'|format(s.success_rate) }}%{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right font-mono text-white">
+                  {% if s.avg_levels_all is not none %}{{ '%.2f'|format(s.avg_levels_all) }}{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right font-mono text-white">
+                  {% if s.avg_duration_all is not none %}{{ _fmt_duration(s.avg_duration_all) }}{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right font-mono {% if s.total_profit_atr is not none and s.total_profit_atr >= 0 %}text-emerald-400{% elif s.total_profit_atr is not none %}text-red-400{% else %}text-gray-500{% endif %}">
+                  {% if s.total_profit_atr is not none %}{{ '%.1f'|format(s.total_profit_atr) }}{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right text-xs text-gray-500">{{ row.computed_at.strftime('%d/%m %H:%M') }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="space-y-4">
+    <div>
+      <h2 class="text-lg font-semibold text-white">Meilleur setup par instrument</h2>
+      <p class="text-sm text-gray-500">Chaque ligne retient la meilleure combinaison trouvée pour un instrument selon {{ metric_label|lower }}.</p>
+    </div>
+
+    <div class="overflow-hidden rounded-2xl border border-gray-700 bg-gray-900">
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[980px] text-sm">
+          <thead class="bg-gray-800/70 text-xs uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-4 py-3 text-left font-medium">Instrument</th>
+              <th class="px-4 py-3 text-left font-medium">Meilleure combinaison</th>
+              <th class="px-4 py-3 text-right font-medium">Cycles</th>
+              <th class="px-4 py-3 text-right font-medium">Réussite</th>
+              <th class="px-4 py-3 text-right font-medium">Durée</th>
+              <th class="px-4 py-3 text-right font-medium">Profit</th>
+              <th class="px-4 py-3 text-right font-medium">Action</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-800">
+            {% for row in instrument_best %}
+            {% set s = row.stats %}
+            <tr class="hover:bg-gray-800/40">
+              <td class="px-4 py-3">
+                <div class="font-medium text-white">{{ row.symbol }}</div>
+                <div class="text-xs text-gray-500">{{ row.exchange }}</div>
+              </td>
+              <td class="px-4 py-3 text-white">ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }}</td>
+              <td class="px-4 py-3 text-right font-mono text-white">{{ row.direction_cycles }}</td>
+              <td class="px-4 py-3 text-right font-mono {% if s.success_rate is not none and s.success_rate >= 50 %}text-emerald-400{% elif s.success_rate is not none %}text-red-400{% else %}text-gray-500{% endif %}">
+                {% if s.success_rate is not none %}{{ '%.2f'|format(s.success_rate) }}%{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono text-white">
+                {% if s.avg_duration_all is not none %}{{ _fmt_duration(s.avg_duration_all) }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono {% if s.total_profit_atr is not none and s.total_profit_atr >= 0 %}text-emerald-400{% elif s.total_profit_atr is not none %}text-red-400{% else %}text-gray-500{% endif %}">
+                {% if s.total_profit_atr is not none %}{{ '%.1f'|format(s.total_profit_atr) }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right">
+                <a href="/strategy/dashboard?direction={{ direction }}&metric={{ metric }}&focus_max_levels={{ row.max_levels }}&focus_tp_atr={{ row.tp_atr }}&focus_level_atr={{ row.level_atr }}"
+                   class="inline-flex items-center rounded-lg border border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-200 transition-colors hover:border-cyan-500 hover:text-cyan-300">
+                  Analyser
+                </a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {% endif %}
+
+</div>
+{% endblock %}

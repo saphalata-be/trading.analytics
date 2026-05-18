@@ -34,6 +34,43 @@ from app.database import get_connection, get_cache_connection
 _jobs: dict[str, dict] = {}
 _STRATEGY_CACHE_VERSION = 2
 
+_DASHBOARD_DIRECTIONS = [
+    {"value": "BOTH", "label": "Long + Short"},
+    {"value": "LONG", "label": "Long uniquement"},
+    {"value": "SHORT", "label": "Short uniquement"},
+]
+
+_DASHBOARD_METRICS = [
+    {
+        "value": "profit_total",
+        "label": "Profit total",
+        "field": "total_profit_atr",
+        "ascending": False,
+        "suffix": "ATR",
+    },
+    {
+        "value": "success_rate",
+        "label": "Taux de réussite",
+        "field": "success_rate",
+        "ascending": False,
+        "suffix": "%",
+    },
+    {
+        "value": "avg_duration",
+        "label": "Durée moyenne",
+        "field": "avg_duration_all",
+        "ascending": True,
+        "suffix": "duration",
+    },
+    {
+        "value": "avg_levels",
+        "label": "Niveaux moyens",
+        "field": "avg_levels_all",
+        "ascending": True,
+        "suffix": "levels",
+    },
+]
+
 router = APIRouter(prefix="/strategy", tags=["strategy"])
 templates = Jinja2Templates(directory="app/templates")
 
@@ -272,6 +309,350 @@ def _aggregate(cycles: list[dict], tp_atr: float = 0.5, level_atr: float = 1.0) 
             ),
         }
     return stats
+
+
+def _weighted_average(values: list[tuple[Optional[float], int]]) -> Optional[float]:
+    total_weight = 0
+    weighted_sum = 0.0
+    for value, weight in values:
+        if value is None or weight <= 0:
+            continue
+        weighted_sum += value * weight
+        total_weight += weight
+    if total_weight == 0:
+        return None
+    return weighted_sum / total_weight
+
+
+def _dashboard_metric_spec(metric: str) -> dict:
+    for spec in _DASHBOARD_METRICS:
+        if spec["value"] == metric:
+            return spec
+    return _DASHBOARD_METRICS[0]
+
+
+def _dashboard_direction_label(direction: str) -> str:
+    for option in _DASHBOARD_DIRECTIONS:
+        if option["value"] == direction:
+            return option["label"]
+    return _DASHBOARD_DIRECTIONS[0]["label"]
+
+
+def _merge_direction_stats(stats_by_direction: dict, direction: str) -> dict | None:
+    if direction in ("LONG", "SHORT"):
+        stats = stats_by_direction.get(direction)
+        if not stats:
+            return None
+        merged = dict(stats)
+        merged["closed_total"] = (merged.get("completed") or 0) + (merged.get("max_levels_closed") or 0)
+        return merged
+
+    long_stats = stats_by_direction.get("LONG") or {}
+    short_stats = stats_by_direction.get("SHORT") or {}
+
+    total = (long_stats.get("total") or 0) + (short_stats.get("total") or 0)
+    completed = (long_stats.get("completed") or 0) + (short_stats.get("completed") or 0)
+    max_levels_closed = (long_stats.get("max_levels_closed") or 0) + (short_stats.get("max_levels_closed") or 0)
+    incomplete = (long_stats.get("incomplete") or 0) + (short_stats.get("incomplete") or 0)
+    closed_total = completed + max_levels_closed
+
+    profit_values = [
+        value
+        for value in (
+            long_stats.get("total_profit_atr"),
+            short_stats.get("total_profit_atr"),
+        )
+        if value is not None
+    ]
+
+    return {
+        "total": total,
+        "completed": completed,
+        "max_levels_closed": max_levels_closed,
+        "incomplete": incomplete,
+        "closed_total": closed_total,
+        "success_rate": (completed / closed_total * 100) if closed_total else None,
+        "total_profit_atr": sum(profit_values) if profit_values else None,
+        "avg_levels_complete": _weighted_average([
+            (long_stats.get("avg_levels_complete"), long_stats.get("completed") or 0),
+            (short_stats.get("avg_levels_complete"), short_stats.get("completed") or 0),
+        ]),
+        "avg_duration_complete": _weighted_average([
+            (long_stats.get("avg_duration_complete"), long_stats.get("completed") or 0),
+            (short_stats.get("avg_duration_complete"), short_stats.get("completed") or 0),
+        ]),
+        "avg_levels_incomplete": _weighted_average([
+            (long_stats.get("avg_levels_incomplete"), long_stats.get("incomplete") or 0),
+            (short_stats.get("avg_levels_incomplete"), short_stats.get("incomplete") or 0),
+        ]),
+        "avg_duration_incomplete": _weighted_average([
+            (long_stats.get("avg_duration_incomplete"), long_stats.get("incomplete") or 0),
+            (short_stats.get("avg_duration_incomplete"), short_stats.get("incomplete") or 0),
+        ]),
+        "avg_levels_all": _weighted_average([
+            (long_stats.get("avg_levels_all"), long_stats.get("total") or 0),
+            (short_stats.get("avg_levels_all"), short_stats.get("total") or 0),
+        ]),
+        "avg_duration_all": _weighted_average([
+            (long_stats.get("avg_duration_all"), long_stats.get("total") or 0),
+            (short_stats.get("avg_duration_all"), short_stats.get("total") or 0),
+        ]),
+    }
+
+
+def _dashboard_sort_rows(rows: list[dict], metric_field: str, ascending: bool) -> list[dict]:
+    def _sort_key(row: dict) -> tuple[int, float]:
+        value = row.get(metric_field)
+        if value is None:
+            return (1, 0.0)
+        return (0, value if ascending else -value)
+
+    return sorted(rows, key=_sort_key)
+
+
+def _dashboard_is_better(candidate: Optional[float], current: Optional[float], ascending: bool) -> bool:
+    if candidate is None:
+        return False
+    if current is None:
+        return True
+    return candidate < current if ascending else candidate > current
+
+
+def _dashboard_combo_matches(
+    row: dict,
+    focus_max_levels: int | None,
+    focus_tp_atr: float | None,
+    focus_level_atr: float | None,
+) -> bool:
+    if focus_max_levels is not None and row["max_levels"] != focus_max_levels:
+        return False
+    if focus_tp_atr is not None and not math.isclose(row["tp_atr"], focus_tp_atr, rel_tol=1e-9, abs_tol=1e-9):
+        return False
+    if focus_level_atr is not None and not math.isclose(row["level_atr"], focus_level_atr, rel_tol=1e-9, abs_tol=1e-9):
+        return False
+    return True
+
+
+def _build_strategy_dashboard(
+    direction: str,
+    metric: str,
+    focus_max_levels: int | None,
+    focus_tp_atr: float | None,
+    focus_level_atr: float | None,
+) -> dict:
+    metric_spec = _dashboard_metric_spec(metric)
+    direction = direction if direction in {"BOTH", "LONG", "SHORT"} else "BOTH"
+
+    con = get_cache_connection()
+    try:
+        rows = con.execute(
+            """
+            SELECT symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json
+            FROM strategy_cache
+            ORDER BY computed_at DESC
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    entries: list[dict] = []
+    instruments_seen: set[tuple[str, str]] = set()
+    combo_seen: set[tuple[int, float, float]] = set()
+    max_levels_values: set[int] = set()
+    tp_atr_values: set[float] = set()
+    level_atr_values: set[float] = set()
+    latest_computed_at = None
+
+    for symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json in rows:
+        try:
+            payload = json.loads(result_json)
+        except json.JSONDecodeError:
+            continue
+
+        if payload.get("cache_version") != _STRATEGY_CACHE_VERSION:
+            continue
+        if payload.get("error") or payload.get("results") is None:
+            continue
+
+        stats = _merge_direction_stats(payload["results"], direction)
+        if not stats or (stats.get("total") or 0) == 0:
+            continue
+
+        metric_value = stats.get(metric_spec["field"])
+        entry = {
+            "symbol": symbol,
+            "exchange": exchange,
+            "instrument_key": f"{symbol}|{exchange}",
+            "max_levels": max_levels,
+            "tp_atr": tp_atr,
+            "level_atr": level_atr,
+            "combo_key": f"{max_levels}|{tp_atr}|{level_atr}",
+            "computed_at": computed_at,
+            "direction_cycles": stats.get("total") or 0,
+            "overall_cycles": payload.get("total_cycles") or 0,
+            "stats": stats,
+            "metric_value": metric_value,
+            metric_spec["field"]: metric_value,
+        }
+        entries.append(entry)
+
+        instruments_seen.add((symbol, exchange))
+        combo_seen.add((max_levels, tp_atr, level_atr))
+        max_levels_values.add(max_levels)
+        tp_atr_values.add(tp_atr)
+        level_atr_values.add(level_atr)
+        if latest_computed_at is None or computed_at > latest_computed_at:
+            latest_computed_at = computed_at
+
+    combo_map: dict[tuple[int, float, float], dict] = {}
+    for entry in entries:
+        key = (entry["max_levels"], entry["tp_atr"], entry["level_atr"])
+        stats = entry["stats"]
+        combo = combo_map.setdefault(
+            key,
+            {
+                "max_levels": entry["max_levels"],
+                "tp_atr": entry["tp_atr"],
+                "level_atr": entry["level_atr"],
+                "instruments_count": 0,
+                "direction_cycles": 0,
+                "overall_cycles": 0,
+                "completed": 0,
+                "max_levels_closed": 0,
+                "incomplete": 0,
+                "positive_instruments": 0,
+                "negative_instruments": 0,
+                "neutral_instruments": 0,
+                "total_profit_atr": 0.0,
+                "profit_count": 0,
+                "avg_levels_num": 0.0,
+                "avg_levels_den": 0,
+                "avg_duration_num": 0.0,
+                "avg_duration_den": 0,
+                "latest_computed_at": entry["computed_at"],
+            },
+        )
+        combo["instruments_count"] += 1
+        combo["direction_cycles"] += entry["direction_cycles"]
+        combo["overall_cycles"] += entry["overall_cycles"]
+        combo["completed"] += stats.get("completed") or 0
+        combo["max_levels_closed"] += stats.get("max_levels_closed") or 0
+        combo["incomplete"] += stats.get("incomplete") or 0
+
+        total_profit = stats.get("total_profit_atr")
+        if total_profit is not None:
+            combo["total_profit_atr"] += total_profit
+            combo["profit_count"] += 1
+            if total_profit > 0:
+                combo["positive_instruments"] += 1
+            elif total_profit < 0:
+                combo["negative_instruments"] += 1
+            else:
+                combo["neutral_instruments"] += 1
+
+        if stats.get("avg_levels_all") is not None and entry["direction_cycles"] > 0:
+            combo["avg_levels_num"] += stats["avg_levels_all"] * entry["direction_cycles"]
+            combo["avg_levels_den"] += entry["direction_cycles"]
+        if stats.get("avg_duration_all") is not None and entry["direction_cycles"] > 0:
+            combo["avg_duration_num"] += stats["avg_duration_all"] * entry["direction_cycles"]
+            combo["avg_duration_den"] += entry["direction_cycles"]
+        if entry["computed_at"] > combo["latest_computed_at"]:
+            combo["latest_computed_at"] = entry["computed_at"]
+
+    leaderboard: list[dict] = []
+    for combo in combo_map.values():
+        closed_total = combo["completed"] + combo["max_levels_closed"]
+        row = {
+            **combo,
+            "success_rate": (combo["completed"] / closed_total * 100) if closed_total else None,
+            "avg_levels_all": (
+                combo["avg_levels_num"] / combo["avg_levels_den"]
+                if combo["avg_levels_den"]
+                else None
+            ),
+            "avg_duration_all": (
+                combo["avg_duration_num"] / combo["avg_duration_den"]
+                if combo["avg_duration_den"]
+                else None
+            ),
+            "avg_profit_per_instrument": (
+                combo["total_profit_atr"] / combo["profit_count"]
+                if combo["profit_count"]
+                else None
+            ),
+            "positive_share": (
+                combo["positive_instruments"] / combo["profit_count"] * 100
+                if combo["profit_count"]
+                else None
+            ),
+        }
+        row[metric_spec["field"]] = row.get(metric_spec["field"])
+        leaderboard.append(row)
+
+    leaderboard = _dashboard_sort_rows(leaderboard, metric_spec["field"], metric_spec["ascending"])
+
+    focus_combo = None
+    if leaderboard:
+        for row in leaderboard:
+            if _dashboard_combo_matches(row, focus_max_levels, focus_tp_atr, focus_level_atr):
+                focus_combo = row
+                break
+        if focus_combo is None:
+            focus_combo = leaderboard[0]
+
+    focus_instruments: list[dict] = []
+    if focus_combo is not None:
+        focus_instruments = [
+            entry
+            for entry in entries
+            if entry["max_levels"] == focus_combo["max_levels"]
+            and math.isclose(entry["tp_atr"], focus_combo["tp_atr"], rel_tol=1e-9, abs_tol=1e-9)
+            and math.isclose(entry["level_atr"], focus_combo["level_atr"], rel_tol=1e-9, abs_tol=1e-9)
+        ]
+        focus_instruments = _dashboard_sort_rows(
+            focus_instruments,
+            metric_spec["field"],
+            metric_spec["ascending"],
+        )
+
+    best_by_instrument: dict[str, dict] = {}
+    for entry in entries:
+        current = best_by_instrument.get(entry["instrument_key"])
+        if current is None or _dashboard_is_better(
+            entry["metric_value"], current["metric_value"], metric_spec["ascending"]
+        ):
+            best_by_instrument[entry["instrument_key"]] = entry
+
+    instrument_best = _dashboard_sort_rows(
+        list(best_by_instrument.values()),
+        metric_spec["field"],
+        metric_spec["ascending"],
+    )
+
+    return {
+        "direction": direction,
+        "direction_label": _dashboard_direction_label(direction),
+        "metric": metric_spec["value"],
+        "metric_label": metric_spec["label"],
+        "metric_field": metric_spec["field"],
+        "metric_suffix": metric_spec["suffix"],
+        "metric_ascending": metric_spec["ascending"],
+        "direction_options": _DASHBOARD_DIRECTIONS,
+        "metric_options": _DASHBOARD_METRICS,
+        "summary": {
+            "entries_count": len(entries),
+            "instrument_count": len(instruments_seen),
+            "combo_count": len(combo_seen),
+            "latest_computed_at": latest_computed_at,
+            "max_levels_values": sorted(max_levels_values),
+            "tp_atr_values": sorted(tp_atr_values),
+            "level_atr_values": sorted(level_atr_values),
+        },
+        "leaderboard": leaderboard[:25],
+        "focus_combo": focus_combo,
+        "focus_instruments": focus_instruments,
+        "instrument_best": instrument_best[:40],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +910,30 @@ async def strategy_index(request: Request):
             "instruments": instruments,
             "results": None,
             "error": None,
+        },
+    )
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+async def strategy_dashboard(
+    request: Request,
+    direction: str = "BOTH",
+    metric: str = "profit_total",
+    focus_max_levels: int | None = None,
+    focus_tp_atr: float | None = None,
+    focus_level_atr: float | None = None,
+):
+    return templates.TemplateResponse(
+        "strategy_dashboard.html",
+        {
+            "request": request,
+            **_build_strategy_dashboard(
+                direction,
+                metric,
+                focus_max_levels,
+                focus_tp_atr,
+                focus_level_atr,
+            ),
         },
     )
 
