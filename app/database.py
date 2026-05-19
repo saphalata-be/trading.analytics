@@ -67,6 +67,30 @@ def init_db() -> None:
         )
     """)
 
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS correlation_basket_id_seq START 1
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS correlation_baskets (
+            id          INTEGER PRIMARY KEY,
+            name        VARCHAR NOT NULL UNIQUE,
+            created_at  TIMESTAMP DEFAULT current_timestamp,
+            updated_at  TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS correlation_basket_items (
+            basket_id    INTEGER NOT NULL REFERENCES correlation_baskets(id),
+            symbol       VARCHAR NOT NULL,
+            exchange     VARCHAR NOT NULL,
+            side         VARCHAR NOT NULL,
+            position     INTEGER NOT NULL,
+            PRIMARY KEY (basket_id, symbol, exchange)
+        )
+    """)
+
     con.close()
 
 

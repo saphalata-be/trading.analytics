@@ -1,0 +1,507 @@
+{% extends "base.html" %}
+{% set active_page = "correlation" %}
+
+{% block title %}Corrélation — Trading Analytics{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="p-6 max-w-7xl mx-auto space-y-8">
+
+  <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-white">Corrélation</h1>
+      <p class="text-sm text-gray-400 mt-1">
+        Test de sous-combinaisons d'un panier FX en données 1H. Le classement retient les paniers dont l'equity USD varie le moins sur tout l'historique commun.
+      </p>
+    </div>
+    <div class="rounded-xl border border-gray-800 bg-gray-900/70 px-4 py-3 text-xs text-gray-400 max-w-xl">
+      Hypothèse de calcul: 1 lot standard = 100 000 unités, PnL valorisé en USD avec les croisements USD disponibles dans la base.
+    </div>
+  </div>
+
+  {% if error %}
+  <div class="bg-red-900/30 border border-red-700 text-red-200 rounded-xl px-5 py-4 text-sm">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-5">
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div>
+        <h2 class="text-base font-semibold text-gray-200">Panier de travail</h2>
+        <p class="text-sm text-gray-400 mt-1">Le panier est sauvegardé en base au lancement du calcul et reproposé automatiquement au prochain chargement.</p>
+      </div>
+      <div class="text-xs text-gray-500">
+        {{ basket_items|length }} paire{% if basket_items|length > 1 %}s{% endif %} sélectionnée{% if basket_items|length > 1 %}s{% endif %}
+      </div>
+    </div>
+
+    <form method="post" action="/correlation/run" class="space-y-5">
+      <input type="hidden" name="basket_id" value="{{ selected_basket_id or '' }}">
+
+      <div class="grid gap-4 xl:grid-cols-[1.3fr_1fr_0.5fr_0.5fr]">
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-gray-400">Panier sauvegardé</label>
+          <select id="saved-basket-select"
+                  class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">Panier le plus récent</option>
+            {% for basket in saved_baskets %}
+            <option value="{{ basket.id }}" {% if selected_basket_id == basket.id %}selected{% endif %}>
+              {{ basket.name }} · {{ basket.item_count }} paire{% if basket.item_count > 1 %}s{% endif %}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-gray-400">Nom du panier</label>
+          <input type="text" name="basket_name" value="{{ basket_name }}"
+                 placeholder="Ex. Basket anti-corrélation majors"
+                 class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-gray-400">Taille min</label>
+          <input type="number" name="min_size" min="1" max="99" value="{{ min_size }}"
+                 class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-gray-400">Taille max</label>
+          <input type="number" name="max_size" min="1" max="99" value="{{ max_size }}"
+                 class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-gray-800 bg-gray-950/50 p-4 space-y-4">
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-end">
+          <div class="flex-1 flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Ajouter une paire</label>
+            <select id="instrument-picker"
+                    class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              {% if available_instruments %}
+              {% for instrument in available_instruments %}
+              <option value="{{ instrument.symbol }}|{{ instrument.exchange }}">{{ instrument.symbol }} - {{ instrument.exchange }}</option>
+              {% endfor %}
+              {% else %}
+              <option value="">Aucune paire 1H disponible</option>
+              {% endif %}
+            </select>
+          </div>
+          <button type="button" id="add-instrument-button"
+                  class="inline-flex items-center justify-center rounded-lg border border-indigo-700 bg-indigo-900/40 px-4 py-2 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-800/50">
+            Ajouter au panier
+          </button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-xs text-gray-500 border-b border-gray-800">
+                <th class="text-left px-3 py-2 font-medium">Paire</th>
+                <th class="text-left px-3 py-2 font-medium">Sens</th>
+                <th class="text-right px-3 py-2 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody id="basket-items-body" class="divide-y divide-gray-800">
+              {% for item in basket_items %}
+              <tr data-key="{{ item.symbol }}|{{ item.exchange }}">
+                <td class="px-3 py-3 text-gray-200 font-medium">
+                  {{ item.symbol }}
+                  <span class="text-xs text-gray-500 ml-1">{{ item.exchange }}</span>
+                  <input type="hidden" name="item_symbol" value="{{ item.symbol }}">
+                  <input type="hidden" name="item_exchange" value="{{ item.exchange }}">
+                </td>
+                <td class="px-3 py-3">
+                  <select name="item_side"
+                          class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <option value="BUY" {% if item.side == 'BUY' %}selected{% endif %}>Buy</option>
+                    <option value="SELL" {% if item.side == 'SELL' %}selected{% endif %}>Sell</option>
+                  </select>
+                </td>
+                <td class="px-3 py-3 text-right">
+                  <button type="button"
+                          class="remove-basket-item inline-flex items-center justify-center rounded-lg border border-red-700 bg-red-900/20 px-3 py-2 text-xs font-medium text-red-200 transition-colors hover:bg-red-900/40">
+                    Retirer
+                  </button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div id="empty-basket-state" class="{% if basket_items %}hidden {% endif %}rounded-xl border border-dashed border-gray-700 bg-gray-950/70 px-4 py-6 text-center text-sm text-gray-500">
+          Ajoutez au moins deux paires pour tester les combinaisons.
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3">
+        <button type="submit"
+                class="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-500">
+          Calculer les combinaisons
+        </button>
+        <span class="text-xs text-gray-500">Toutes les combinaisons de taille comprise entre min et max seront testées sur l'historique commun 1H.</span>
+      </div>
+    </form>
+  </div>
+
+  {% if job_id or (result and result.top_combinations) %}
+  <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
+    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div>
+        <h2 class="text-base font-semibold text-gray-200">Top 5 des combinaisons les plus stables</h2>
+        <p id="progress-label" class="text-sm text-gray-400 mt-1">
+          {% if job_id %}Initialisation du calcul…{% else %}Résultat final sur l'historique 1H commun.{% endif %}
+        </p>
+      </div>
+      <span id="progress-text" class="text-xs text-gray-500 font-mono">
+        {% if job_id %}0 / ?{% else %}Calcul terminé{% endif %}
+      </span>
+    </div>
+
+    {% if job_id %}
+    <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+      <div id="progress-bar"
+           class="bg-indigo-600 h-2 rounded-full transition-all duration-300 ease-out"
+           style="width: 0%"></div>
+    </div>
+    {% endif %}
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-xs text-gray-500 border-b border-gray-800">
+            <th class="text-left px-3 py-2 font-medium">#</th>
+            <th class="text-left px-3 py-2 font-medium">Combinaison</th>
+            <th class="text-right px-3 py-2 font-medium">Taille</th>
+            <th class="text-right px-3 py-2 font-medium">Amplitude USD</th>
+            <th class="text-right px-3 py-2 font-medium">Ecart-type</th>
+            <th class="text-right px-3 py-2 font-medium">Equity finale</th>
+            <th class="text-right px-3 py-2 font-medium">Barres</th>
+          </tr>
+        </thead>
+        <tbody id="top-combinations-body" class="divide-y divide-gray-800">
+          {% if result and result.top_combinations %}
+          {% for combo in result.top_combinations %}
+          <tr class="hover:bg-gray-800/30">
+            <td class="px-3 py-3 text-gray-500">{{ loop.index }}</td>
+            <td class="px-3 py-3 text-gray-200">{{ combo.members|join(' + ') }}</td>
+            <td class="px-3 py-3 text-right text-white font-mono">{{ combo.size }}</td>
+            <td class="px-3 py-3 text-right text-emerald-300 font-mono">{{ "%.2f"|format(combo.equity_range) }}</td>
+            <td class="px-3 py-3 text-right text-white font-mono">{{ "%.2f"|format(combo.equity_stddev) }}</td>
+            <td class="px-3 py-3 text-right font-mono {% if combo.ending_equity >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "%.2f"|format(combo.ending_equity) }}</td>
+            <td class="px-3 py-3 text-right text-gray-400 font-mono">{{ combo.bars }}</td>
+          </tr>
+          {% endfor %}
+          {% else %}
+          <tr id="top-combinations-empty-row">
+            <td colspan="7" class="px-3 py-6 text-center text-sm text-gray-500">Le top 5 apparaîtra ici pendant le calcul.</td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if result and not result.error and result.best_combination %}
+  <div class="grid gap-6 xl:grid-cols-[0.95fr_1.35fr]">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
+      <div>
+        <h2 class="text-base font-semibold text-gray-200">Meilleure combinaison</h2>
+        <p class="text-sm text-gray-400 mt-1">{{ result.best_combination.members|join(' + ') }}</p>
+      </div>
+
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+          <div class="text-xs uppercase tracking-[0.18em] text-gray-500">Combinaisons testées</div>
+          <div class="mt-2 text-2xl font-semibold text-white">{{ result.tested_combinations }}</div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+          <div class="text-xs uppercase tracking-[0.18em] text-gray-500">Combinaisons valides</div>
+          <div class="mt-2 text-2xl font-semibold text-white">{{ result.valid_combinations }}</div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+          <div class="text-xs uppercase tracking-[0.18em] text-gray-500">Amplitude min</div>
+          <div class="mt-2 text-2xl font-semibold text-emerald-300">{{ "%.2f"|format(result.best_combination.equity_range) }}</div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+          <div class="text-xs uppercase tracking-[0.18em] text-gray-500">Combinaisons ignorées</div>
+          <div class="mt-2 text-2xl font-semibold text-white">{{ result.skipped_combinations }}</div>
+        </div>
+      </div>
+
+      <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 text-sm text-gray-300 space-y-2">
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-gray-500">Taille</span>
+          <span class="font-mono text-white">{{ result.best_combination.size }}</span>
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-gray-500">Ecart-type</span>
+          <span class="font-mono text-white">{{ "%.2f"|format(result.best_combination.equity_stddev) }}</span>
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-gray-500">Equity finale</span>
+          <span class="font-mono {% if result.best_combination.ending_equity >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">{{ "%.2f"|format(result.best_combination.ending_equity) }}</span>
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-gray-500">Barres 1H utilisées</span>
+          <span class="font-mono text-white">{{ result.best_combination.bars }}</span>
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-gray-500">Panier sauvegardé</span>
+          <span class="font-mono text-white">{{ result.basket_name }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
+      <div>
+        <h2 class="text-base font-semibold text-gray-200">Courbe d'equity</h2>
+        <p class="text-sm text-gray-400 mt-1">Evolution horaire de la meilleure combinaison trouvée.</p>
+      </div>
+      <div class="rounded-xl border border-gray-800 bg-gray-950/70 p-4">
+        <canvas id="best-equity-chart" height="140"></canvas>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const availableInstruments = {{ available_instruments_json|tojson }};
+  const basketBody = document.getElementById('basket-items-body');
+  const emptyBasketState = document.getElementById('empty-basket-state');
+  const instrumentPicker = document.getElementById('instrument-picker');
+  const addInstrumentButton = document.getElementById('add-instrument-button');
+  const basketSelect = document.getElementById('saved-basket-select');
+
+  function syncEmptyBasketState() {
+    if (!emptyBasketState) {
+      return;
+    }
+    emptyBasketState.classList.toggle('hidden', basketBody.children.length > 0);
+  }
+
+  function makeBasketRow(item) {
+    const row = document.createElement('tr');
+    row.dataset.key = item.symbol + '|' + item.exchange;
+    row.innerHTML = `
+      <td class="px-3 py-3 text-gray-200 font-medium">
+        ${item.symbol}
+        <span class="text-xs text-gray-500 ml-1">${item.exchange}</span>
+        <input type="hidden" name="item_symbol" value="${item.symbol}">
+        <input type="hidden" name="item_exchange" value="${item.exchange}">
+      </td>
+      <td class="px-3 py-3">
+        <select name="item_side"
+                class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <option value="BUY" ${item.side === 'SELL' ? '' : 'selected'}>Buy</option>
+          <option value="SELL" ${item.side === 'SELL' ? 'selected' : ''}>Sell</option>
+        </select>
+      </td>
+      <td class="px-3 py-3 text-right">
+        <button type="button"
+                class="remove-basket-item inline-flex items-center justify-center rounded-lg border border-red-700 bg-red-900/20 px-3 py-2 text-xs font-medium text-red-200 transition-colors hover:bg-red-900/40">
+          Retirer
+        </button>
+      </td>
+    `;
+    return row;
+  }
+
+  if (addInstrumentButton) {
+    addInstrumentButton.addEventListener('click', function () {
+      const value = instrumentPicker.value;
+      if (!value) {
+        return;
+      }
+      if (basketBody.querySelector(`tr[data-key="${value}"]`)) {
+        return;
+      }
+
+      const selected = availableInstruments.find((item) => `${item.symbol}|${item.exchange}` === value);
+      if (!selected) {
+        return;
+      }
+
+      basketBody.appendChild(makeBasketRow({
+        symbol: selected.symbol,
+        exchange: selected.exchange,
+        side: 'BUY'
+      }));
+      syncEmptyBasketState();
+    });
+  }
+
+  if (basketBody) {
+    basketBody.addEventListener('click', function (event) {
+      const button = event.target.closest('.remove-basket-item');
+      if (!button) {
+        return;
+      }
+      const row = button.closest('tr');
+      if (row) {
+        row.remove();
+        syncEmptyBasketState();
+      }
+    });
+  }
+
+  if (basketSelect) {
+    basketSelect.addEventListener('change', function () {
+      const value = this.value;
+      const target = value ? `/correlation/?basket_id=${encodeURIComponent(value)}` : '/correlation/';
+      window.location.href = target;
+    });
+  }
+
+  function renderTopRows(rows) {
+    const body = document.getElementById('top-combinations-body');
+    if (!body) {
+      return;
+    }
+
+    if (!rows || rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-sm text-gray-500">Le top 5 apparaîtra ici pendant le calcul.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = rows.map((row, index) => {
+      const endingClass = row.ending_equity >= 0 ? 'text-emerald-400' : 'text-red-400';
+      return `
+        <tr class="hover:bg-gray-800/30">
+          <td class="px-3 py-3 text-gray-500">${index + 1}</td>
+          <td class="px-3 py-3 text-gray-200">${row.members.join(' + ')}</td>
+          <td class="px-3 py-3 text-right text-white font-mono">${row.size}</td>
+          <td class="px-3 py-3 text-right text-emerald-300 font-mono">${Number(row.equity_range).toFixed(2)}</td>
+          <td class="px-3 py-3 text-right text-white font-mono">${Number(row.equity_stddev).toFixed(2)}</td>
+          <td class="px-3 py-3 text-right font-mono ${endingClass}">${Number(row.ending_equity).toFixed(2)}</td>
+          <td class="px-3 py-3 text-right text-gray-400 font-mono">${row.bars}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  {% if job_id %}
+  (function () {
+    const bar = document.getElementById('progress-bar');
+    const label = document.getElementById('progress-label');
+    const text = document.getElementById('progress-text');
+    const es = new EventSource('/correlation/progress/{{ job_id }}');
+
+    es.onmessage = function (event) {
+      const payload = JSON.parse(event.data);
+      if (payload.type === 'progress') {
+        const pct = payload.total > 0 ? Math.round((payload.current / payload.total) * 100) : 0;
+        if (bar) {
+          bar.style.width = pct + '%';
+        }
+        if (label) {
+          label.textContent = payload.label || 'Calcul en cours…';
+        }
+        if (text) {
+          text.textContent = payload.total > 1 ? `${payload.current} / ${payload.total}` : 'Préparation';
+        }
+        renderTopRows(payload.top_rows || []);
+      } else if (payload.type === 'done') {
+        if (bar) {
+          bar.style.width = '100%';
+        }
+        if (label) {
+          label.textContent = 'Calcul terminé, chargement du résultat…';
+        }
+        es.close();
+        window.location.href = payload.url;
+      } else if (payload.type === 'error') {
+        if (label) {
+          label.textContent = payload.message || 'Erreur inconnue';
+        }
+        if (bar) {
+          bar.classList.replace('bg-indigo-600', 'bg-red-600');
+        }
+        es.close();
+      }
+    };
+
+    es.onerror = function () {
+      if (label) {
+        label.textContent = 'Connexion SSE perdue.';
+      }
+      if (bar) {
+        bar.classList.replace('bg-indigo-600', 'bg-red-600');
+      }
+      es.close();
+    };
+  })();
+  {% endif %}
+
+  {% if result and not result.error and result.best_curve_labels and result.best_curve_values %}
+  (function () {
+    const canvas = document.getElementById('best-equity-chart');
+    if (!canvas) {
+      return;
+    }
+
+    new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: {{ result.best_curve_labels|tojson }},
+        datasets: [{
+          label: 'Equity USD',
+          data: {{ result.best_curve_values|tojson }},
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52, 211, 153, 0.15)',
+          fill: true,
+          tension: 0.18,
+          borderWidth: 2,
+          pointRadius: 0
+        }]
+      },
+      options: {
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false,
+        },
+        plugins: {
+          legend: {
+            labels: {
+              color: '#d1d5db'
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: '#6b7280',
+              maxTicksLimit: 10
+            },
+            grid: {
+              color: 'rgba(107, 114, 128, 0.12)'
+            }
+          },
+          y: {
+            ticks: {
+              color: '#6b7280'
+            },
+            grid: {
+              color: 'rgba(107, 114, 128, 0.12)'
+            }
+          }
+        }
+      }
+    });
+  })();
+  {% endif %}
+
+  syncEmptyBasketState();
+</script>
+{% endblock %}

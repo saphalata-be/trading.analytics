@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 
 from app.database import init_db, init_cache_db
-from app.routers import data_management, strategy, icmarkets
+from app.routers import correlation, data_management, strategy, icmarkets
 
 app = FastAPI(title="Trading Analytics")
 
@@ -12,6 +12,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(data_management.router)
 app.include_router(strategy.router)
 app.include_router(icmarkets.router)
+app.include_router(correlation.router)
 
 
 def _fmt_duration(minutes: float) -> str:
@@ -31,6 +32,7 @@ _all_templates.env.globals["_fmt_duration"] = _fmt_duration
 data_management.templates.env.globals["_fmt_duration"] = _fmt_duration
 strategy.templates.env.globals["_fmt_duration"] = _fmt_duration
 icmarkets.templates.env.globals["_fmt_duration"] = _fmt_duration
+correlation.templates.env.globals["_fmt_duration"] = _fmt_duration
 
 
 @app.on_event("startup")
