@@ -141,18 +141,20 @@
         <thead>
           <tr class="text-xs text-gray-500 border-b border-gray-700 bg-gray-800/50">
             <th class="text-left px-4 py-3 font-medium">Instrument</th>
-            <th class="text-center px-4 py-3 font-medium text-emerald-400" colspan="5">▲ ACHAT</th>
-            <th class="text-center px-4 py-3 font-medium text-red-400" colspan="5">▼ VENTE</th>
+            <th class="text-center px-4 py-3 font-medium text-emerald-400" colspan="6">▲ ACHAT</th>
+            <th class="text-center px-4 py-3 font-medium text-red-400" colspan="6">▼ VENTE</th>
           </tr>
           <tr class="text-xs text-gray-600 border-b border-gray-700">
             <th class="px-4 py-2"></th>
             <th class="text-right px-3 py-2 font-medium">Réussite</th>
             <th class="text-right px-3 py-2 font-medium">Niv. moy.</th>
+            <th class="text-right px-3 py-2 font-medium">Niv. max</th>
             <th class="text-right px-3 py-2 font-medium">Durée moy.</th>
             <th class="text-right px-3 py-2 font-medium border-r border-gray-700">Profit total (ATR)</th>
             <th class="text-center px-3 py-2 font-medium border-r border-gray-700">Swap / panier</th>
             <th class="text-right px-3 py-2 font-medium">Réussite</th>
             <th class="text-right px-3 py-2 font-medium">Niv. moy.</th>
+            <th class="text-right px-3 py-2 font-medium">Niv. max</th>
             <th class="text-right px-3 py-2 font-medium">Durée moy.</th>
             <th class="text-right px-3 py-2 font-medium">Profit total (ATR)</th>
             <th class="text-center px-3 py-2 font-medium">Swap / panier</th>
@@ -176,6 +178,9 @@
             </td>
             <td class="px-3 py-3 text-right text-white font-mono">
               {% if long_s and long_s.avg_levels_all is not none %}{{ "%.2f"|format(long_s.avg_levels_all) }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-3 text-right text-white font-mono">
+              {% if long_s and long_s.peak_levels_all is not none %}{{ long_s.peak_levels_all }}{% else %}—{% endif %}
             </td>
             <td class="px-3 py-3 text-right text-white font-mono">
               {% if long_s and long_s.avg_duration_all is not none %}{{ _fmt_duration(long_s.avg_duration_all) }}{% else %}—{% endif %}
@@ -209,6 +214,9 @@
             </td>
             <td class="px-3 py-3 text-right text-white font-mono">
               {% if short_s and short_s.avg_levels_all is not none %}{{ "%.2f"|format(short_s.avg_levels_all) }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-3 text-right text-white font-mono">
+              {% if short_s and short_s.peak_levels_all is not none %}{{ short_s.peak_levels_all }}{% else %}—{% endif %}
             </td>
             <td class="px-3 py-3 text-right text-white font-mono">
               {% if short_s and short_s.avg_duration_all is not none %}{{ _fmt_duration(short_s.avg_duration_all) }}{% else %}—{% endif %}
@@ -304,6 +312,18 @@
               </td>
               <td class="py-2 text-right text-indigo-300 font-mono font-semibold">
                 {% if s.avg_levels_all is not none %}{{ "%.2f"|format(s.avg_levels_all) }}{% else %}—{% endif %}
+              </td>
+            </tr>
+            <tr>
+              <td class="py-2 text-gray-400">Niveaux max atteints</td>
+              <td class="py-2 text-right text-white font-mono">
+                {% if s.peak_levels_complete is not none %}{{ s.peak_levels_complete }}{% else %}—{% endif %}
+              </td>
+              <td class="py-2 text-right text-white font-mono">
+                {% if s.peak_levels_incomplete is not none %}{{ s.peak_levels_incomplete }}{% else %}—{% endif %}
+              </td>
+              <td class="py-2 text-right text-indigo-300 font-mono font-semibold">
+                {% if s.peak_levels_all is not none %}{{ s.peak_levels_all }}{% else %}—{% endif %}
               </td>
             </tr>
             <tr>

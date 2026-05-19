@@ -32,7 +32,7 @@ from app.database import get_connection, get_cache_connection
 
 # In-memory job store: job_id -> {"queue": asyncio.Queue, "result": dict | None}
 _jobs: dict[str, dict] = {}
-_STRATEGY_CACHE_VERSION = 2
+_STRATEGY_CACHE_VERSION = 3
 
 _DASHBOARD_DIRECTIONS = [
     {"value": "BOTH", "label": "Long + Short"},
@@ -289,18 +289,21 @@ def _aggregate(cycles: list[dict], tp_atr: float = 0.5, level_atr: float = 1.0) 
             "incomplete": len(incomplete),
             "success_rate": success_rate,
             "total_profit_atr": total_profit_atr,
+            "peak_levels_complete": max((c["max_levels"] for c in complete), default=None),
             "avg_levels_complete": (
                 sum(c["max_levels"] for c in complete) / len(complete) if complete else None
             ),
             "avg_duration_complete": (
                 sum(c["duration_minutes"] for c in complete) / len(complete) if complete else None
             ),
+            "peak_levels_incomplete": max((c["max_levels"] for c in incomplete), default=None),
             "avg_levels_incomplete": (
                 sum(c["max_levels"] for c in incomplete) / len(incomplete) if incomplete else None
             ),
             "avg_duration_incomplete": (
                 sum(c["duration_minutes"] for c in incomplete) / len(incomplete) if incomplete else None
             ),
+            "peak_levels_all": max((c["max_levels"] for c in cycs), default=None),
             "avg_levels_all": (
                 sum(c["max_levels"] for c in cycs) / len(cycs) if cycs else None
             ),
@@ -373,6 +376,20 @@ def _merge_direction_stats(stats_by_direction: dict, direction: str) -> dict | N
         "closed_total": closed_total,
         "success_rate": (completed / closed_total * 100) if closed_total else None,
         "total_profit_atr": sum(profit_values) if profit_values else None,
+        "peak_levels_complete": max(
+            value
+            for value in (
+                long_stats.get("peak_levels_complete"),
+                short_stats.get("peak_levels_complete"),
+            )
+            if value is not None
+        ) if any(
+            value is not None
+            for value in (
+                long_stats.get("peak_levels_complete"),
+                short_stats.get("peak_levels_complete"),
+            )
+        ) else None,
         "avg_levels_complete": _weighted_average([
             (long_stats.get("avg_levels_complete"), long_stats.get("completed") or 0),
             (short_stats.get("avg_levels_complete"), short_stats.get("completed") or 0),
@@ -381,6 +398,20 @@ def _merge_direction_stats(stats_by_direction: dict, direction: str) -> dict | N
             (long_stats.get("avg_duration_complete"), long_stats.get("completed") or 0),
             (short_stats.get("avg_duration_complete"), short_stats.get("completed") or 0),
         ]),
+        "peak_levels_incomplete": max(
+            value
+            for value in (
+                long_stats.get("peak_levels_incomplete"),
+                short_stats.get("peak_levels_incomplete"),
+            )
+            if value is not None
+        ) if any(
+            value is not None
+            for value in (
+                long_stats.get("peak_levels_incomplete"),
+                short_stats.get("peak_levels_incomplete"),
+            )
+        ) else None,
         "avg_levels_incomplete": _weighted_average([
             (long_stats.get("avg_levels_incomplete"), long_stats.get("incomplete") or 0),
             (short_stats.get("avg_levels_incomplete"), short_stats.get("incomplete") or 0),
@@ -389,6 +420,20 @@ def _merge_direction_stats(stats_by_direction: dict, direction: str) -> dict | N
             (long_stats.get("avg_duration_incomplete"), long_stats.get("incomplete") or 0),
             (short_stats.get("avg_duration_incomplete"), short_stats.get("incomplete") or 0),
         ]),
+        "peak_levels_all": max(
+            value
+            for value in (
+                long_stats.get("peak_levels_all"),
+                short_stats.get("peak_levels_all"),
+            )
+            if value is not None
+        ) if any(
+            value is not None
+            for value in (
+                long_stats.get("peak_levels_all"),
+                short_stats.get("peak_levels_all"),
+            )
+        ) else None,
         "avg_levels_all": _weighted_average([
             (long_stats.get("avg_levels_all"), long_stats.get("total") or 0),
             (short_stats.get("avg_levels_all"), short_stats.get("total") or 0),

@@ -231,6 +231,7 @@
                 <th class="px-4 py-3 text-right font-medium">Cycles</th>
                 <th class="px-4 py-3 text-right font-medium">Réussite</th>
                 <th class="px-4 py-3 text-right font-medium">Niv. moy.</th>
+                <th class="px-4 py-3 text-right font-medium">Niv. max</th>
                 <th class="px-4 py-3 text-right font-medium">Durée moy.</th>
                 <th class="px-4 py-3 text-right font-medium">Profit</th>
                 <th class="px-4 py-3 text-right font-medium">MAJ</th>
@@ -250,6 +251,9 @@
                 </td>
                 <td class="px-4 py-3 text-right font-mono text-white">
                   {% if s.avg_levels_all is not none %}{{ '%.2f'|format(s.avg_levels_all) }}{% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-3 text-right font-mono text-white">
+                  {% if s.peak_levels_all is not none %}{{ s.peak_levels_all }}{% else %}—{% endif %}
                 </td>
                 <td class="px-4 py-3 text-right font-mono text-white">
                   {% if s.avg_duration_all is not none %}{{ _fmt_duration(s.avg_duration_all) }}{% else %}—{% endif %}
@@ -283,6 +287,7 @@
               <th class="px-4 py-3 text-left font-medium">Meilleure combinaison</th>
               <th class="px-4 py-3 text-right font-medium">Cycles</th>
               <th class="px-4 py-3 text-right font-medium">Réussite</th>
+              <th class="px-4 py-3 text-right font-medium">Niv. max</th>
               <th class="px-4 py-3 text-right font-medium">Durée</th>
               <th class="px-4 py-3 text-right font-medium">Profit</th>
               <th class="px-4 py-3 text-right font-medium">Action</th>
@@ -300,6 +305,9 @@
               <td class="px-4 py-3 text-right font-mono text-white">{{ row.direction_cycles }}</td>
               <td class="px-4 py-3 text-right font-mono {% if s.success_rate is not none and s.success_rate >= 50 %}text-emerald-400{% elif s.success_rate is not none %}text-red-400{% else %}text-gray-500{% endif %}">
                 {% if s.success_rate is not none %}{{ '%.2f'|format(s.success_rate) }}%{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono text-white">
+                {% if s.peak_levels_all is not none %}{{ s.peak_levels_all }}{% else %}—{% endif %}
               </td>
               <td class="px-4 py-3 text-right font-mono text-white">
                 {% if s.avg_duration_all is not none %}{{ _fmt_duration(s.avg_duration_all) }}{% else %}—{% endif %}
