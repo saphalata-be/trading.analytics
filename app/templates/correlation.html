@@ -28,41 +28,27 @@
   </div>
   {% endif %}
 
+  {% if notice %}
+  <div class="bg-emerald-900/20 border border-emerald-700 text-emerald-200 rounded-xl px-5 py-4 text-sm">
+    {{ notice }}
+  </div>
+  {% endif %}
+
   <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-5">
     <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
       <div>
         <h2 class="text-base font-semibold text-gray-200">Panier de travail</h2>
-        <p class="text-sm text-gray-400 mt-1">Le panier est sauvegardé en base au lancement du calcul et reproposé automatiquement au prochain chargement.</p>
+        <p class="text-sm text-gray-400 mt-1">Le panier est synchronisé automatiquement en base à chaque ajout, modification de sens ou suppression.</p>
       </div>
       <div class="text-xs text-gray-500">
         {{ basket_items|length }} paire{% if basket_items|length > 1 %}s{% endif %} sélectionnée{% if basket_items|length > 1 %}s{% endif %}
       </div>
     </div>
 
+    <div id="basket-feedback" class="hidden rounded-xl px-5 py-4 text-sm"></div>
+
     <form method="post" action="/correlation/run" class="space-y-5">
-      <input type="hidden" name="basket_id" value="{{ selected_basket_id or '' }}">
-
-      <div class="grid gap-4 xl:grid-cols-[1.3fr_1fr_0.5fr_0.5fr]">
-        <div class="flex flex-col gap-1">
-          <label class="text-xs text-gray-400">Panier sauvegardé</label>
-          <select id="saved-basket-select"
-                  class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <option value="">Panier le plus récent</option>
-            {% for basket in saved_baskets %}
-            <option value="{{ basket.id }}" {% if selected_basket_id == basket.id %}selected{% endif %}>
-              {{ basket.name }} · {{ basket.item_count }} paire{% if basket.item_count > 1 %}s{% endif %}
-            </option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="flex flex-col gap-1">
-          <label class="text-xs text-gray-400">Nom du panier</label>
-          <input type="text" name="basket_name" value="{{ basket_name }}"
-                 placeholder="Ex. Basket anti-corrélation majors"
-                 class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-        </div>
-
+      <div class="grid gap-4 xl:grid-cols-[1fr_1fr]">
         <div class="flex flex-col gap-1">
           <label class="text-xs text-gray-400">Taille min</label>
           <input type="number" name="min_size" min="1" max="99" value="{{ min_size }}"
@@ -281,13 +267,23 @@
   const emptyBasketState = document.getElementById('empty-basket-state');
   const instrumentPicker = document.getElementById('instrument-picker');
   const addInstrumentButton = document.getElementById('add-instrument-button');
-  const basketSelect = document.getElementById('saved-basket-select');
+  const basketFeedback = document.getElementById('basket-feedback');
 
   function syncEmptyBasketState() {
     if (!emptyBasketState) {
       return;
     }
     emptyBasketState.classList.toggle('hidden', basketBody.children.length > 0);
+  }
+
+  function showBasketFeedback(message, isError) {
+    if (!basketFeedback) {
+      return;
+    }
+    basketFeedback.textContent = message;
+    basketFeedback.className = `rounded-xl px-5 py-4 text-sm ${isError
+      ? 'bg-red-900/30 border border-red-700 text-red-200'
+      : 'bg-emerald-900/20 border border-emerald-700 text-emerald-200'}`;
   }
 
   function makeBasketRow(item) {
@@ -314,16 +310,43 @@
         </button>
       </td>
     `;
+    const sideSelect = row.querySelector('select[name="item_side"]');
+    if (sideSelect) {
+      sideSelect.dataset.previousValue = item.side || 'BUY';
+    }
     return row;
   }
 
+  function renderBasketRows(items) {
+    basketBody.innerHTML = '';
+    items.forEach((item) => {
+      basketBody.appendChild(makeBasketRow(item));
+    });
+    syncEmptyBasketState();
+  }
+
+  async function postBasketUpdate(url, payload) {
+    const body = new URLSearchParams(payload);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+      },
+      body
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || 'Erreur de synchronisation du panier.');
+    }
+    renderBasketRows(data.basket_items || []);
+    showBasketFeedback(data.message || 'Panier mis à jour.', false);
+    return data;
+  }
+
   if (addInstrumentButton) {
-    addInstrumentButton.addEventListener('click', function () {
+    addInstrumentButton.addEventListener('click', async function () {
       const value = instrumentPicker.value;
       if (!value) {
-        return;
-      }
-      if (basketBody.querySelector(`tr[data-key="${value}"]`)) {
         return;
       }
 
@@ -332,34 +355,67 @@
         return;
       }
 
-      basketBody.appendChild(makeBasketRow({
-        symbol: selected.symbol,
-        exchange: selected.exchange,
-        side: 'BUY'
-      }));
-      syncEmptyBasketState();
+      try {
+        await postBasketUpdate('/correlation/basket/items', {
+          symbol: selected.symbol,
+          exchange: selected.exchange,
+          side: 'BUY'
+        });
+      } catch (error) {
+        showBasketFeedback(error.message, true);
+      }
     });
   }
 
   if (basketBody) {
-    basketBody.addEventListener('click', function (event) {
+    basketBody.addEventListener('click', async function (event) {
       const button = event.target.closest('.remove-basket-item');
+
       if (!button) {
         return;
       }
+
       const row = button.closest('tr');
-      if (row) {
-        row.remove();
-        syncEmptyBasketState();
+      if (!row) {
+        return;
+      }
+
+      const [symbol, exchange] = (row.dataset.key || '').split('|');
+      try {
+        await postBasketUpdate('/correlation/basket/items/remove', {
+          symbol,
+          exchange
+        });
+      } catch (error) {
+        showBasketFeedback(error.message, true);
       }
     });
-  }
 
-  if (basketSelect) {
-    basketSelect.addEventListener('change', function () {
-      const value = this.value;
-      const target = value ? `/correlation/?basket_id=${encodeURIComponent(value)}` : '/correlation/';
-      window.location.href = target;
+    basketBody.addEventListener('change', async function (event) {
+      const sideSelect = event.target.closest('select[name="item_side"]');
+      if (!sideSelect) {
+        return;
+      }
+
+      const row = sideSelect.closest('tr');
+      if (!row) {
+        return;
+      }
+
+      const [symbol, exchange] = (row.dataset.key || '').split('|');
+      const previousValue = sideSelect.dataset.previousValue || 'BUY';
+
+      try {
+        await postBasketUpdate('/correlation/basket/items', {
+          symbol,
+          exchange,
+          side: sideSelect.value
+        });
+        sideSelect.dataset.previousValue = sideSelect.value;
+      } catch (error) {
+        sideSelect.value = previousValue;
+        showBasketFeedback(error.message, true);
+      }
     });
   }
 

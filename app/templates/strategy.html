@@ -105,6 +105,8 @@
   </div>
   {% endif %}
 
+  <div id="basket-feedback" class="hidden rounded-xl px-5 py-4 text-sm"></div>
+
   <!-- Progress bar (shown while background job is running) -->
   {% if job_id %}
   <div id="progress-container" class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-3">
@@ -139,8 +141,8 @@
         <thead>
           <tr class="text-xs text-gray-500 border-b border-gray-700 bg-gray-800/50">
             <th class="text-left px-4 py-3 font-medium">Instrument</th>
-            <th class="text-center px-4 py-3 font-medium text-emerald-400" colspan="4">▲ ACHAT</th>
-            <th class="text-center px-4 py-3 font-medium text-red-400" colspan="4">▼ VENTE</th>
+            <th class="text-center px-4 py-3 font-medium text-emerald-400" colspan="5">▲ ACHAT</th>
+            <th class="text-center px-4 py-3 font-medium text-red-400" colspan="5">▼ VENTE</th>
           </tr>
           <tr class="text-xs text-gray-600 border-b border-gray-700">
             <th class="px-4 py-2"></th>
@@ -148,10 +150,12 @@
             <th class="text-right px-3 py-2 font-medium">Niv. moy.</th>
             <th class="text-right px-3 py-2 font-medium">Durée moy.</th>
             <th class="text-right px-3 py-2 font-medium border-r border-gray-700">Profit total (ATR)</th>
+            <th class="text-center px-3 py-2 font-medium border-r border-gray-700">Swap / panier</th>
             <th class="text-right px-3 py-2 font-medium">Réussite</th>
             <th class="text-right px-3 py-2 font-medium">Niv. moy.</th>
             <th class="text-right px-3 py-2 font-medium">Durée moy.</th>
             <th class="text-right px-3 py-2 font-medium">Profit total (ATR)</th>
+            <th class="text-center px-3 py-2 font-medium">Swap / panier</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-800">
@@ -182,6 +186,20 @@
               {% else %}text-gray-500{% endif %}">
               {% if long_s and long_s.total_profit_atr is not none %}{{ "%.1f"|format(long_s.total_profit_atr) }}{% else %}—{% endif %}
             </td>
+            <td class="px-3 py-3 border-r border-gray-700">
+              <div class="flex flex-col items-center gap-2">
+                <span class="font-mono text-xs whitespace-nowrap {% if data.swap_long is not none %}{% if data.swap_long > 0 %}text-emerald-400{% elif data.swap_long < 0 %}text-red-400{% else %}text-gray-500{% endif %}{% else %}text-gray-500{% endif %}">
+                  {% if data.swap_long is not none %}{{ "%.4f"|format(data.swap_long) }}{% else %}—{% endif %}
+                </span>
+                <button type="button"
+                   data-symbol="{{ data.symbol }}"
+                   data-exchange="{{ data.exchange }}"
+                   data-side="BUY"
+                   class="js-add-correlation-item inline-flex items-center justify-center rounded-lg border border-emerald-700 bg-emerald-900/20 px-2.5 py-1.5 text-xs font-medium text-emerald-200 transition-colors hover:bg-emerald-900/40 whitespace-nowrap">
+                  Ajouter
+                </button>
+              </div>
+            </td>
             {# SHORT #}
             <td class="px-3 py-3 text-right font-mono
               {% if short_s and short_s.success_rate is not none %}
@@ -200,6 +218,20 @@
                 {% if short_s.total_profit_atr >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}
               {% else %}text-gray-500{% endif %}">
               {% if short_s and short_s.total_profit_atr is not none %}{{ "%.1f"|format(short_s.total_profit_atr) }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-3">
+              <div class="flex flex-col items-center gap-2">
+                <span class="font-mono text-xs whitespace-nowrap {% if data.swap_short is not none %}{% if data.swap_short > 0 %}text-emerald-400{% elif data.swap_short < 0 %}text-red-400{% else %}text-gray-500{% endif %}{% else %}text-gray-500{% endif %}">
+                  {% if data.swap_short is not none %}{{ "%.4f"|format(data.swap_short) }}{% else %}—{% endif %}
+                </span>
+                <button type="button"
+                   data-symbol="{{ data.symbol }}"
+                   data-exchange="{{ data.exchange }}"
+                   data-side="SELL"
+                   class="js-add-correlation-item inline-flex items-center justify-center rounded-lg border border-red-700 bg-red-900/20 px-2.5 py-1.5 text-xs font-medium text-red-200 transition-colors hover:bg-red-900/40 whitespace-nowrap">
+                  Ajouter
+                </button>
+              </div>
             </td>
           </tr>
           {% endfor %}
@@ -310,12 +342,56 @@
 <script>
   // Sync hidden exchange field when symbol changes
   const sel = document.getElementById('symbol-select');
+  const basketFeedback = document.getElementById('basket-feedback');
   if (sel) {
     sel.addEventListener('change', function() {
       const opt = this.options[this.selectedIndex];
       document.getElementById('exchange-input').value = opt.dataset.exchange;
     });
   }
+
+  function showBasketFeedback(message, isError) {
+    if (!basketFeedback) {
+      return;
+    }
+    basketFeedback.textContent = message;
+    basketFeedback.className = `rounded-xl px-5 py-4 text-sm ${isError
+      ? 'bg-red-900/30 border border-red-700 text-red-200'
+      : 'bg-emerald-900/20 border border-emerald-700 text-emerald-200'}`;
+  }
+
+  document.addEventListener('click', async function (event) {
+    const button = event.target.closest('.js-add-correlation-item');
+    if (!button) {
+      return;
+    }
+
+    const payload = new URLSearchParams({
+      symbol: button.dataset.symbol,
+      exchange: button.dataset.exchange,
+      side: button.dataset.side
+    });
+
+    button.disabled = true;
+    try {
+      const response = await fetch('/correlation/basket/items', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+        },
+        body: payload
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message || 'Erreur de mise à jour du panier.');
+      }
+      showBasketFeedback(data.message || 'Panier mis à jour.', false);
+    } catch (error) {
+      showBasketFeedback(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   // SSE progress tracking
   {% if job_id %}

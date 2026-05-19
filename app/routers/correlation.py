@@ -5,12 +5,11 @@ import json
 import math
 import statistics
 import uuid
-from datetime import datetime
 from itertools import combinations
 from typing import Any, Callable
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.database import get_connection
@@ -21,6 +20,7 @@ templates = Jinja2Templates(directory="app/templates")
 _jobs: dict[str, dict[str, Any]] = {}
 _LOT_SIZE = 100_000.0
 _TOP_LIMIT = 5
+_SINGLETON_BASKET_NAME = "Panier corrélation"
 
 
 def _is_fx_symbol(symbol: str) -> bool:
@@ -37,10 +37,6 @@ def _normalize_side(side: str) -> str:
 
 def _side_label(side: str) -> str:
     return "Achat" if side == "BUY" else "Vente"
-
-
-def _default_basket_name() -> str:
-    return datetime.now().strftime("Panier %Y-%m-%d %H:%M")
 
 
 def _parse_int(value: Any, default: int) -> int:
@@ -75,45 +71,62 @@ def _get_fx_instruments() -> list[dict[str, str | None]]:
     return instruments
 
 
-def _list_saved_baskets() -> list[dict[str, Any]]:
-    con = get_connection()
-    try:
-        rows = con.execute(
-            """
-            SELECT b.id, b.name, b.updated_at, COUNT(i.symbol) AS item_count
-            FROM correlation_baskets b
-            LEFT JOIN correlation_basket_items i ON i.basket_id = b.id
-            GROUP BY b.id, b.name, b.updated_at
-            ORDER BY b.updated_at DESC, b.id DESC
-            """
-        ).fetchall()
-    finally:
-        con.close()
+def _add_or_update_basket_item(
+    basket_items: list[dict[str, str]],
+    available_lookup: set[tuple[str, str]],
+    symbol: str,
+    exchange: str,
+    side: str,
+) -> tuple[list[dict[str, str]], str | None, str | None]:
+    key = (symbol, exchange)
+    if key not in available_lookup:
+        return basket_items, None, f"{symbol} ({exchange}) n'est pas disponible en 1H pour la corrélation."
 
-    return [
+    normalized_side = _normalize_side(side)
+    updated_items = [dict(item) for item in basket_items]
+
+    for item in updated_items:
+        if item["symbol"] != symbol or item["exchange"] != exchange:
+            continue
+        previous_side = item["side"]
+        item["side"] = normalized_side
+        if previous_side == normalized_side:
+            return updated_items, f"{symbol} est déjà présent en {_side_label(normalized_side).lower()}.", None
+        return updated_items, f"{symbol} mis à jour en {_side_label(normalized_side).lower()} dans le panier.", None
+
+    updated_items.append(
         {
-            "id": row[0],
-            "name": row[1],
-            "updated_at": row[2],
-            "item_count": row[3],
+            "symbol": symbol,
+            "exchange": exchange,
+            "side": normalized_side,
         }
-        for row in rows
-    ]
+    )
+    return updated_items, f"{symbol} ajouté au panier en {_side_label(normalized_side).lower()}.", None
 
 
-def _get_saved_basket(basket_id: int | None) -> dict[str, Any] | None:
+def _get_singleton_basket() -> dict[str, Any]:
     con = get_connection()
     try:
-        if basket_id is None:
-            basket = con.execute(
+        basket = con.execute(
+            """
+            SELECT id, name, created_at, updated_at
+            FROM correlation_baskets
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        if basket is None:
+            basket_id = con.execute(
+                "SELECT nextval('correlation_basket_id_seq')"
+            ).fetchone()[0]
+            con.execute(
                 """
-                SELECT id, name, created_at, updated_at
-                FROM correlation_baskets
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        else:
+                INSERT INTO correlation_baskets (id, name, created_at, updated_at)
+                VALUES (?, ?, current_timestamp, current_timestamp)
+                """,
+                [basket_id, _SINGLETON_BASKET_NAME],
+            )
             basket = con.execute(
                 """
                 SELECT id, name, created_at, updated_at
@@ -122,9 +135,6 @@ def _get_saved_basket(basket_id: int | None) -> dict[str, Any] | None:
                 """,
                 [basket_id],
             ).fetchone()
-
-        if basket is None:
-            return None
 
         items = con.execute(
             """
@@ -155,37 +165,20 @@ def _get_saved_basket(basket_id: int | None) -> dict[str, Any] | None:
     }
 
 
-def _save_basket(
-    basket_id: int | None,
-    basket_name: str,
-    basket_items: list[dict[str, str]],
-) -> dict[str, Any]:
-    name = basket_name.strip() or _default_basket_name()
-
+def _save_singleton_basket(basket_items: list[dict[str, str]]) -> dict[str, Any]:
     con = get_connection()
     try:
-        current_id = basket_id
-        if current_id is not None:
-            exists = con.execute(
-                "SELECT id FROM correlation_baskets WHERE id = ?",
-                [current_id],
-            ).fetchone()
-            if exists is None:
-                current_id = None
-
-        existing_by_name = con.execute(
-            "SELECT id FROM correlation_baskets WHERE name = ?",
-            [name],
+        basket = con.execute(
+            """
+            SELECT id
+            FROM correlation_baskets
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """
         ).fetchone()
 
-        if current_id is not None and existing_by_name is not None and existing_by_name[0] != current_id:
-            raise ValueError("Un autre panier utilise déjà ce nom.")
-
-        if current_id is None and existing_by_name is not None:
-            current_id = existing_by_name[0]
-
-        if current_id is None:
-            current_id = con.execute(
+        if basket is None:
+            basket_id = con.execute(
                 "SELECT nextval('correlation_basket_id_seq')"
             ).fetchone()[0]
             con.execute(
@@ -193,30 +186,31 @@ def _save_basket(
                 INSERT INTO correlation_baskets (id, name, created_at, updated_at)
                 VALUES (?, ?, current_timestamp, current_timestamp)
                 """,
-                [current_id, name],
+                [basket_id, _SINGLETON_BASKET_NAME],
             )
         else:
+            basket_id = basket[0]
             created_at = con.execute(
                 "SELECT created_at FROM correlation_baskets WHERE id = ?",
-                [current_id],
+                [basket_id],
             ).fetchone()[0]
             con.execute(
                 "DELETE FROM correlation_basket_items WHERE basket_id = ?",
-                [current_id],
+                [basket_id],
             )
             con.execute(
                 """
                 DELETE FROM correlation_baskets
                 WHERE id = ?
                 """,
-                [current_id],
+                [basket_id],
             )
             con.execute(
                 """
                 INSERT INTO correlation_baskets (id, name, created_at, updated_at)
                 VALUES (?, ?, ?, current_timestamp)
                 """,
-                [current_id, name, created_at],
+                [basket_id, _SINGLETON_BASKET_NAME, created_at],
             )
 
         for index, item in enumerate(basket_items, start=1):
@@ -225,15 +219,27 @@ def _save_basket(
                 INSERT INTO correlation_basket_items (basket_id, symbol, exchange, side, position)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                [current_id, item["symbol"], item["exchange"], item["side"], index],
+                [basket_id, item["symbol"], item["exchange"], item["side"], index],
             )
     finally:
         con.close()
 
-    saved = _get_saved_basket(current_id)
-    if saved is None:
-        raise ValueError("Impossible de relire le panier sauvegardé.")
-    return saved
+    return _get_singleton_basket()
+
+
+def _remove_basket_item(
+    basket_items: list[dict[str, str]],
+    symbol: str,
+    exchange: str,
+) -> tuple[list[dict[str, str]], str]:
+    updated_items = [
+        dict(item)
+        for item in basket_items
+        if item["symbol"] != symbol or item["exchange"] != exchange
+    ]
+    if len(updated_items) == len(basket_items):
+        return updated_items, f"{symbol} n'était pas présent dans le panier."
+    return updated_items, f"{symbol} retiré du panier."
 
 
 def _find_usd_conversion(
@@ -532,7 +538,6 @@ def _run_search(
 
 async def _run_search_job(
     job_id: str,
-    basket_id: int,
     basket_name: str,
     basket_items: list[dict[str, str]],
     min_size: int,
@@ -553,12 +558,10 @@ async def _run_search_job(
             basket_items,
             min_size,
             max_size,
-            available_instruments,
             publish,
         )
         result["selected_basket_id"] = basket_id
         _jobs[job_id]["result"] = result
-    except Exception as exc:  # noqa: BLE001
         _jobs[job_id]["result"] = {
             "error": f"Erreur de calcul : {exc}",
             "selected_basket_id": basket_id,
@@ -574,24 +577,19 @@ async def _run_search_job(
 def _build_context(
     request: Request,
     *,
-    selected_basket_id: int | None = None,
-    basket_name: str | None = None,
     basket_items: list[dict[str, str]] | None = None,
     min_size: int | None = None,
     max_size: int | None = None,
     job_id: str | None = None,
     result: dict[str, Any] | None = None,
     error: str | None = None,
+    notice: str | None = None,
 ) -> dict[str, Any]:
     available_instruments = _get_fx_instruments()
-    selected_basket = _get_saved_basket(selected_basket_id)
+    saved_basket = _get_singleton_basket()
 
-    if selected_basket is not None:
-        selected_basket_id = selected_basket["id"]
     if basket_items is None:
-        basket_items = selected_basket["items"] if selected_basket else []
-    if basket_name is None:
-        basket_name = selected_basket["name"] if selected_basket else ""
+        basket_items = saved_basket["items"]
     if min_size is None:
         min_size = 2 if len(basket_items) >= 2 else 1
     if max_size is None:
@@ -601,9 +599,7 @@ def _build_context(
 
     return {
         "request": request,
-        "saved_baskets": _list_saved_baskets(),
-        "selected_basket_id": selected_basket_id,
-        "basket_name": basket_name,
+        "basket_label": saved_basket["name"],
         "basket_items": basket_items,
         "available_instruments": available_instruments,
         "available_instruments_json": [
@@ -619,14 +615,70 @@ def _build_context(
         "job_id": job_id,
         "result": result,
         "error": error,
+        "notice": notice,
     }
 
 
 @router.get("/", response_class=HTMLResponse)
-async def correlation_index(request: Request, basket_id: int | None = None):
+async def correlation_index(request: Request):
     return templates.TemplateResponse(
         "correlation.html",
-        _build_context(request, selected_basket_id=basket_id),
+        _build_context(request),
+    )
+
+
+@router.post("/basket/items")
+async def correlation_basket_add_or_update_item(request: Request):
+    form = await request.form()
+    symbol = str(form.get("symbol") or "").strip()
+    exchange = str(form.get("exchange") or "").strip()
+    side = str(form.get("side") or "BUY")
+
+    if not symbol or not exchange:
+        return JSONResponse({"ok": False, "message": "Symbole ou marché manquant."}, status_code=400)
+
+    available_instruments = _get_fx_instruments()
+    available_lookup = {(item["symbol"], item["exchange"]) for item in available_instruments}
+    basket = _get_singleton_basket()
+    basket_items, notice, error = _add_or_update_basket_item(
+        basket["items"],
+        available_lookup,
+        symbol,
+        exchange,
+        side,
+    )
+
+    if error:
+        return JSONResponse({"ok": False, "message": error}, status_code=400)
+
+    saved_basket = _save_singleton_basket(basket_items)
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": notice,
+            "basket_items": saved_basket["items"],
+        }
+    )
+
+
+@router.post("/basket/items/remove")
+async def correlation_basket_remove_item(request: Request):
+    form = await request.form()
+    symbol = str(form.get("symbol") or "").strip()
+    exchange = str(form.get("exchange") or "").strip()
+
+    if not symbol or not exchange:
+        return JSONResponse({"ok": False, "message": "Symbole ou marché manquant."}, status_code=400)
+
+    basket = _get_singleton_basket()
+    basket_items, notice = _remove_basket_item(basket["items"], symbol, exchange)
+    saved_basket = _save_singleton_basket(basket_items)
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": notice,
+            "basket_items": saved_basket["items"],
+        }
     )
 
 
@@ -636,9 +688,6 @@ async def correlation_run(request: Request):
     available_instruments = _get_fx_instruments()
     available_lookup = {(item["symbol"], item["exchange"]) for item in available_instruments}
 
-    basket_id_raw = _parse_int(form.get("basket_id"), 0)
-    basket_id = basket_id_raw or None
-    basket_name = str(form.get("basket_name") or "").strip()
     min_size = max(1, _parse_int(form.get("min_size"), 2))
     symbols = form.getlist("item_symbol")
     exchanges = form.getlist("item_exchange")
@@ -664,8 +713,6 @@ async def correlation_run(request: Request):
             "correlation.html",
             _build_context(
                 request,
-                selected_basket_id=basket_id,
-                basket_name=basket_name,
                 basket_items=basket_items,
                 min_size=min_size,
                 max_size=max(len(basket_items), 1),
@@ -677,28 +724,13 @@ async def correlation_run(request: Request):
     max_size = min(max(1, max_size), len(basket_items))
     min_size = min(min_size, max_size)
 
-    try:
-        saved_basket = _save_basket(basket_id, basket_name, basket_items)
-    except ValueError as exc:
-        return templates.TemplateResponse(
-            "correlation.html",
-            _build_context(
-                request,
-                selected_basket_id=basket_id,
-                basket_name=basket_name,
-                basket_items=basket_items,
-                min_size=min_size,
-                max_size=max_size,
-                error=str(exc),
-            ),
-        )
+    saved_basket = _save_singleton_basket(basket_items)
 
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"queue": asyncio.Queue(), "result": None}
     asyncio.create_task(
         _run_search_job(
             job_id,
-            saved_basket["id"],
             saved_basket["name"],
             [
                 {
@@ -718,8 +750,6 @@ async def correlation_run(request: Request):
         "correlation.html",
         _build_context(
             request,
-            selected_basket_id=saved_basket["id"],
-            basket_name=saved_basket["name"],
             basket_items=[
                 {
                     "symbol": item["symbol"],
@@ -772,8 +802,6 @@ async def correlation_result(request: Request, job_id: str):
         "correlation.html",
         _build_context(
             request,
-            selected_basket_id=result.get("selected_basket_id"),
-            basket_name=result.get("basket_name"),
             basket_items=result.get("basket_items") or [],
             min_size=result.get("min_size"),
             max_size=result.get("max_size"),

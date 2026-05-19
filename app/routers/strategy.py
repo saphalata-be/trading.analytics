@@ -685,6 +685,44 @@ def _load_cache(
     return result
 
 
+def _get_mt5_swap_lookup() -> dict[str, dict[str, float | None]]:
+    con = get_cache_connection()
+    try:
+        rows = con.execute(
+            "SELECT name, swap_long, swap_short FROM mt5_symbols"
+        ).fetchall()
+    finally:
+        con.close()
+
+    return {
+        str(name): {
+            "swap_long": swap_long,
+            "swap_short": swap_short,
+        }
+        for name, swap_long, swap_short in rows
+    }
+
+
+def _enrich_all_results_with_mt5_swaps(payload: dict) -> dict:
+    all_results = payload.get("all_results")
+    if not all_results:
+        return payload
+
+    swap_lookup = _get_mt5_swap_lookup()
+    enriched_results: dict[str, dict] = {}
+
+    for key, item in all_results.items():
+        enriched_item = dict(item)
+        swap_data = swap_lookup.get(item["symbol"], {})
+        enriched_item["swap_long"] = swap_data.get("swap_long")
+        enriched_item["swap_short"] = swap_data.get("swap_short")
+        enriched_results[key] = enriched_item
+
+    enriched_payload = dict(payload)
+    enriched_payload["all_results"] = enriched_results
+    return enriched_payload
+
+
 def _load_all_instruments_from_cache(
     instruments: list[dict],
     max_levels: int,
@@ -963,6 +1001,7 @@ async def strategy_run(
         else:
             cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr)
         if cached is not None:
+            cached = _enrich_all_results_with_mt5_swaps(cached)
             return templates.TemplateResponse(
                 "strategy.html",
                 {"request": request, "instruments": instruments, **cached},
@@ -1030,9 +1069,10 @@ async def strategy_result(request: Request, job_id: str):
             },
         )
     instruments = _get_instruments()
+    result = _enrich_all_results_with_mt5_swaps(job["result"])
     return templates.TemplateResponse(
         "strategy.html",
-        {"request": request, "instruments": instruments, **job["result"]},
+        {"request": request, "instruments": instruments, **result},
     )
 
 
