@@ -87,6 +87,7 @@ def _run_cycle_fast(
     bars_high: list,
     bars_low: list,
     bar_ts_min: list,
+    bar_days: list,
     start_idx: int,
     atr50: float,
     max_levels: int,
@@ -143,6 +144,7 @@ def _run_cycle_fast(
         "duration_minutes": bar_ts_min[end_idx] - bar_ts_min[start_idx],
         "completed": completed,
         "closed_max_levels": closed_max_levels,
+        "start_day": bar_days[start_idx],
     }
 
 
@@ -151,6 +153,7 @@ def _simulate_fast(
     bars_high: list,
     bars_low: list,
     bar_ts_min: list,
+    bar_days: list,
     hourly_indices: list,
     atr50_by_idx: dict,
     max_levels: int,
@@ -165,7 +168,7 @@ def _simulate_fast(
             continue
         for direction in ("LONG", "SHORT"):
             cycle = _run_cycle_fast(
-                bars_open, bars_high, bars_low, bar_ts_min,
+                bars_open, bars_high, bars_low, bar_ts_min, bar_days,
                 start_idx, atr50, max_levels, tp_atr, level_atr, direction,
             )
             cycle["direction"] = direction
@@ -200,6 +203,7 @@ def _worker_instrument(
     bars_high: list,
     bars_low: list,
     bar_ts_min: list,
+    bar_days: list,
     hourly_indices: list,
     atr50_by_idx: dict,
     combos: list[ParamCombo],
@@ -213,7 +217,7 @@ def _worker_instrument(
     for combo in combos:
         try:
             cycles = _simulate_fast(
-                bars_open, bars_high, bars_low, bar_ts_min,
+                bars_open, bars_high, bars_low, bar_ts_min, bar_days,
                 hourly_indices, atr50_by_idx,
                 combo.max_levels, combo.tp_atr, combo.level_atr,
             )
@@ -309,7 +313,7 @@ def _get_instruments(con, symbol: str | None, exchange: str | None) -> list[tupl
 
 def _load_instrument_data(
     con, symbol: str, exchange: str
-) -> tuple[list, list, list, list, list, dict]:
+) -> tuple[list, list, list, list, list, list, dict]:
     """
     Load and pre-process instrument data into primitive-only structures.
 
@@ -317,6 +321,7 @@ def _load_instrument_data(
     -------
     bars_open, bars_high, bars_low : list[float]
     bar_ts_min                     : list[int]  (minutes since epoch, for duration)
+    bar_days                       : list[str]  (YYYY-MM-DD, for reporting)
     hourly_indices                 : list[int]  (bar indices where minute == 0)
     atr50_by_idx                   : dict[int, float]  (ATR50 keyed by bar index)
     """
@@ -331,12 +336,13 @@ def _load_instrument_data(
     ).fetchall()
 
     if not min_rows:
-        return [], [], [], [], [], {}
+        return [], [], [], [], [], [], {}
 
     bars_open = [r[1] for r in min_rows]
     bars_high = [r[2] for r in min_rows]
     bars_low  = [r[3] for r in min_rows]
     bar_ts_min = [int(r[0].timestamp()) // 60 for r in min_rows]
+    bar_days = [r[0].date().isoformat() for r in min_rows]
     hourly_indices = [i for i, r in enumerate(min_rows) if r[0].minute == 0]
 
     # Daily bars for ATR50 (ASC order for bisect)
@@ -367,7 +373,7 @@ def _load_instrument_data(
         if min_rows[i][0].date() in atr50_by_date
     }
 
-    return bars_open, bars_high, bars_low, bar_ts_min, hourly_indices, atr50_by_idx
+    return bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +397,7 @@ def main() -> None:
         "--tp-atr",
         nargs="+",
         type=float,
-        default=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0],
+        default=[2.0],
         metavar="F",
         help="List of tp_atr values to test (default: 0.25 0.5 0.75 1.0 1.5 2.0)",
     )
@@ -399,7 +405,7 @@ def main() -> None:
         "--level-atr",
         nargs="+",
         type=float,
-        default=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0],
+        default=[2.0],
         metavar="F",
         help="List of level_atr values to test (default: 0.25 0.5 0.75 1.0 1.5 2.0)",
     )
@@ -489,7 +495,7 @@ def main() -> None:
                     # This lets the web app connect freely between instrument loads.
                     load_con = get_connection()
                     try:
-                        bars_open, bars_high, bars_low, bar_ts_min, hourly_indices, atr50_by_idx = \
+                        bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx = \
                             _load_instrument_data(load_con, symbol, exchange)
                     finally:
                         load_con.close()
@@ -506,7 +512,7 @@ def main() -> None:
                             _worker_instrument,
                             symbol, exchange,
                             bars_open, bars_high, bars_low,
-                            bar_ts_min, hourly_indices, atr50_by_idx,
+                            bar_ts_min, bar_days, hourly_indices, atr50_by_idx,
                             combo_batch,
                         )
                         futures[future] = (symbol, exchange)

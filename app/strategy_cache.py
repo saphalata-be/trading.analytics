@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-STRATEGY_CACHE_VERSION = 3
-SUPPORTED_STRATEGY_CACHE_VERSIONS = {2, STRATEGY_CACHE_VERSION}
+STRATEGY_CACHE_VERSION = 4
+SUPPORTED_STRATEGY_CACHE_VERSIONS = {STRATEGY_CACHE_VERSION}
 
 _PEAK_LEVEL_FIELDS = (
     "peak_levels_complete",
@@ -17,6 +17,7 @@ def _normalize_direction_stats(stats: dict | None) -> dict | None:
     normalized = dict(stats)
     for field in _PEAK_LEVEL_FIELDS:
         normalized.setdefault(field, None)
+    normalized.setdefault("level_reach", [])
     return normalized
 
 

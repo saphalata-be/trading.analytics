@@ -291,6 +291,34 @@ def _dashboard_direction_label(direction: str) -> str:
     return _DASHBOARD_DIRECTIONS[0]["label"]
 
 
+def _merge_level_reach_stats(long_stats: dict, short_stats: dict, total_cycles: int) -> list[dict]:
+    if total_cycles <= 0:
+        return []
+
+    merged_levels: dict[int, dict] = {}
+    for stats in (long_stats, short_stats):
+        for level_stats in stats.get("level_reach") or []:
+            level = level_stats.get("level")
+            if level is None:
+                continue
+            merged_entry = merged_levels.setdefault(
+                level,
+                {"level": level, "hits": 0, "reached_days": set()},
+            )
+            merged_entry["hits"] += level_stats.get("hits") or 0
+            merged_entry["reached_days"].update(level_stats.get("reached_days") or [])
+
+    return [
+        {
+            "level": level,
+            "hits": entry["hits"],
+            "hit_rate": entry["hits"] / total_cycles * 100,
+            "reached_days": sorted(entry["reached_days"]),
+        }
+        for level, entry in sorted(merged_levels.items(), reverse=True)
+    ]
+
+
 def _merge_direction_stats(stats_by_direction: dict, direction: str) -> dict | None:
     if direction in ("LONG", "SHORT"):
         stats = stats_by_direction.get(direction)
@@ -324,6 +352,7 @@ def _merge_direction_stats(stats_by_direction: dict, direction: str) -> dict | N
         "max_levels_closed": max_levels_closed,
         "incomplete": incomplete,
         "closed_total": closed_total,
+        "level_reach": _merge_level_reach_stats(long_stats, short_stats, total),
         "success_rate": (completed / closed_total * 100) if closed_total else None,
         "total_profit_atr": sum(profit_values) if profit_values else None,
         "peak_levels_complete": max(

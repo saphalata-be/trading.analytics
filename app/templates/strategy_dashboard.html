@@ -253,7 +253,16 @@
                   {% if s.avg_levels_all is not none %}{{ '%.2f'|format(s.avg_levels_all) }}{% else %}—{% endif %}
                 </td>
                 <td class="px-4 py-3 text-right font-mono text-white">
-                  {% if s.peak_levels_all is not none %}{{ s.peak_levels_all }}{% else %}—{% endif %}
+                  {% if s.peak_levels_all is not none and s.level_reach %}
+                  <button type="button"
+                          class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 text-white transition-colors hover:border-cyan-700 hover:bg-cyan-900/20 hover:text-cyan-200"
+                          data-popup-title="{{ row.symbol }} · {{ direction_label }}"
+                          data-popup-subtitle="{{ row.exchange }} · Combinaison ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }} · {{ row.direction_cycles }} cycles"
+                          data-total-cycles="{{ row.direction_cycles }}"
+                          data-level-reach='{{ s.level_reach|tojson }}'>
+                    {{ s.peak_levels_all }}
+                  </button>
+                  {% else %}—{% endif %}
                 </td>
                 <td class="px-4 py-3 text-right font-mono text-white">
                   {% if s.avg_duration_all is not none %}{{ _fmt_duration(s.avg_duration_all) }}{% else %}—{% endif %}
@@ -307,7 +316,16 @@
                 {% if s.success_rate is not none %}{{ '%.2f'|format(s.success_rate) }}%{% else %}—{% endif %}
               </td>
               <td class="px-4 py-3 text-right font-mono text-white">
-                {% if s.peak_levels_all is not none %}{{ s.peak_levels_all }}{% else %}—{% endif %}
+                {% if s.peak_levels_all is not none and s.level_reach %}
+                <button type="button"
+                        class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 text-white transition-colors hover:border-cyan-700 hover:bg-cyan-900/20 hover:text-cyan-200"
+                        data-popup-title="{{ row.symbol }} · {{ direction_label }}"
+                        data-popup-subtitle="{{ row.exchange }} · Meilleure combinaison ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }} · {{ row.direction_cycles }} cycles"
+                        data-total-cycles="{{ row.direction_cycles }}"
+                        data-level-reach='{{ s.level_reach|tojson }}'>
+                  {{ s.peak_levels_all }}
+                </button>
+                {% else %}—{% endif %}
               </td>
               <td class="px-4 py-3 text-right font-mono text-white">
                 {% if s.avg_duration_all is not none %}{{ _fmt_duration(s.avg_duration_all) }}{% else %}—{% endif %}
@@ -331,5 +349,136 @@
 
   {% endif %}
 
+  <div id="level-reach-modal"
+       class="fixed inset-0 z-50 hidden"
+       aria-hidden="true">
+    <div class="absolute inset-0 bg-gray-950/85 backdrop-blur-sm" data-close-level-reach="true"></div>
+    <div class="relative flex min-h-full items-center justify-center p-4">
+      <div class="w-full max-w-4xl overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl shadow-black/40">
+        <div class="flex items-start justify-between gap-4 border-b border-gray-700 px-5 py-4">
+          <div>
+            <h3 id="level-reach-title" class="text-lg font-semibold text-white">Atteinte par niveau</h3>
+            <p id="level-reach-subtitle" class="mt-1 text-sm text-gray-400"></p>
+          </div>
+          <button type="button"
+                  id="level-reach-close"
+                  class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-700 text-gray-400 transition-colors hover:border-gray-500 hover:text-white"
+                  aria-label="Fermer le popup">
+            ✕
+          </button>
+        </div>
+
+        <div class="max-h-[70vh] overflow-auto">
+          <table class="w-full text-sm">
+            <thead class="sticky top-0 border-b border-gray-700 bg-gray-900/95 text-gray-500 backdrop-blur">
+              <tr>
+                <th class="px-5 py-3 text-left font-medium">Niveau</th>
+                <th class="px-5 py-3 text-right font-medium">Atteint</th>
+                <th class="px-5 py-3 text-right font-medium">Occurrences</th>
+                <th class="px-5 py-3 text-left font-medium">Jours mémorisés</th>
+              </tr>
+            </thead>
+            <tbody id="level-reach-body" class="divide-y divide-gray-800"></tbody>
+          </table>
+        </div>
+
+        <div class="border-t border-gray-700 px-5 py-3 text-xs text-gray-500">
+          Les jours sont mémorisés uniquement pour les derniers niveaux atteints le plus rarement.
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const levelReachModal = document.getElementById('level-reach-modal');
+  const levelReachTitle = document.getElementById('level-reach-title');
+  const levelReachSubtitle = document.getElementById('level-reach-subtitle');
+  const levelReachBody = document.getElementById('level-reach-body');
+  const levelReachClose = document.getElementById('level-reach-close');
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function closeLevelReachModal() {
+    if (!levelReachModal) {
+      return;
+    }
+    levelReachModal.classList.add('hidden');
+    levelReachModal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('overflow-hidden');
+  }
+
+  function openLevelReachModal(trigger) {
+    if (!levelReachModal || !levelReachBody || !trigger) {
+      return;
+    }
+
+    let levels = [];
+    try {
+      levels = JSON.parse(trigger.dataset.levelReach || '[]');
+    } catch (_error) {
+      levels = [];
+    }
+
+    const totalCycles = Number(trigger.dataset.totalCycles || 0);
+    levelReachTitle.textContent = trigger.dataset.popupTitle || 'Atteinte par niveau';
+    levelReachSubtitle.textContent = trigger.dataset.popupSubtitle || '';
+
+    if (!levels.length) {
+      levelReachBody.innerHTML = `
+        <tr>
+          <td colspan="4" class="px-5 py-6 text-center text-sm text-gray-500">Aucun détail par niveau disponible.</td>
+        </tr>`;
+    } else {
+      levelReachBody.innerHTML = levels.map((level) => {
+        const days = Array.isArray(level.reached_days) && level.reached_days.length
+          ? level.reached_days.map((day) => escapeHtml(day)).join(', ')
+          : '—';
+        return `
+          <tr>
+            <td class="px-5 py-3 font-mono text-white">N${escapeHtml(level.level)}</td>
+            <td class="px-5 py-3 text-right font-mono font-semibold text-cyan-300">${Number(level.hit_rate || 0).toFixed(2)}%</td>
+            <td class="px-5 py-3 text-right font-mono text-gray-300">${escapeHtml(level.hits || 0)} / ${escapeHtml(totalCycles || 0)}</td>
+            <td class="px-5 py-3 text-gray-400">${days}</td>
+          </tr>`;
+      }).join('');
+    }
+
+    levelReachModal.classList.remove('hidden');
+    levelReachModal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('overflow-hidden');
+  }
+
+  if (levelReachClose) {
+    levelReachClose.addEventListener('click', closeLevelReachModal);
+  }
+
+  document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+      closeLevelReachModal();
+    }
+  });
+
+  document.addEventListener('click', function(event) {
+    const openButton = event.target.closest('.js-open-level-reach');
+    if (openButton) {
+      openLevelReachModal(openButton);
+      return;
+    }
+
+    if (event.target.closest('[data-close-level-reach="true"]')) {
+      closeLevelReachModal();
+    }
+  });
+</script>
 {% endblock %}
