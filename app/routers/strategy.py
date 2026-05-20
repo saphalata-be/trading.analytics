@@ -29,10 +29,11 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.database import get_connection, get_cache_connection
+from app.strategy_cache import STRATEGY_CACHE_VERSION, normalize_strategy_cache_payload
+from app.strategy_stats import aggregate_cycles
 
 # In-memory job store: job_id -> {"queue": asyncio.Queue, "result": dict | None}
 _jobs: dict[str, dict] = {}
-_STRATEGY_CACHE_VERSION = 3
 
 _DASHBOARD_DIRECTIONS = [
     {"value": "BOTH", "label": "Long + Short"},
@@ -260,58 +261,7 @@ def _run_cycle(
 
 
 def _aggregate(cycles: list[dict], tp_atr: float = 0.5, level_atr: float = 1.0) -> dict:
-    """Compute mean stats per direction, separating complete vs incomplete."""
-    from collections import defaultdict
-
-    buckets: dict[str, list[dict]] = defaultdict(list)
-    for c in cycles:
-        buckets[c["direction"]].append(c)
-
-    stats = {}
-    for direction, cycs in buckets.items():
-        complete = [c for c in cycs if c["completed"]]
-        maxlevel = [c for c in cycs if c["closed_max_levels"]]
-        incomplete = [c for c in cycs if not c["completed"] and not c["closed_max_levels"]]
-        total_closed = len(complete) + len(maxlevel)
-        success_rate = len(complete) / total_closed * 100 if total_closed > 0 else None
-        # Total profit in ATR units over closed cycles:
-        #   completed cycles → +tp_atr ATR each (TP condition)
-        #   max-levels cycles → −level_atr*n*(n+1)/2 ATR  (n equally-spaced levels, exit at n+1-th trigger)
-        total_profit_atr = (
-            len(complete) * tp_atr
-            - sum(level_atr * c["max_levels"] * (c["max_levels"] + 1) / 2 for c in maxlevel)
-        ) if (complete or maxlevel) else None
-
-        stats[direction] = {
-            "total": len(cycs),
-            "completed": len(complete),
-            "max_levels_closed": len(maxlevel),
-            "incomplete": len(incomplete),
-            "success_rate": success_rate,
-            "total_profit_atr": total_profit_atr,
-            "peak_levels_complete": max((c["max_levels"] for c in complete), default=None),
-            "avg_levels_complete": (
-                sum(c["max_levels"] for c in complete) / len(complete) if complete else None
-            ),
-            "avg_duration_complete": (
-                sum(c["duration_minutes"] for c in complete) / len(complete) if complete else None
-            ),
-            "peak_levels_incomplete": max((c["max_levels"] for c in incomplete), default=None),
-            "avg_levels_incomplete": (
-                sum(c["max_levels"] for c in incomplete) / len(incomplete) if incomplete else None
-            ),
-            "avg_duration_incomplete": (
-                sum(c["duration_minutes"] for c in incomplete) / len(incomplete) if incomplete else None
-            ),
-            "peak_levels_all": max((c["max_levels"] for c in cycs), default=None),
-            "avg_levels_all": (
-                sum(c["max_levels"] for c in cycs) / len(cycs) if cycs else None
-            ),
-            "avg_duration_all": (
-                sum(c["duration_minutes"] for c in cycs) / len(cycs) if cycs else None
-            ),
-        }
-    return stats
+    return aggregate_cycles(cycles, tp_atr, level_atr)
 
 
 def _weighted_average(values: list[tuple[Optional[float], int]]) -> Optional[float]:
@@ -510,11 +460,11 @@ def _build_strategy_dashboard(
 
     for symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json in rows:
         try:
-            payload = json.loads(result_json)
+            payload = normalize_strategy_cache_payload(json.loads(result_json))
         except json.JSONDecodeError:
             continue
 
-        if payload.get("cache_version") != _STRATEGY_CACHE_VERSION:
+        if payload is None:
             continue
         if payload.get("error") or payload.get("results") is None:
             continue
@@ -722,8 +672,8 @@ def _load_cache(
         con.close()
     if row is None:
         return None
-    result = json.loads(row[0])
-    if result.get("cache_version") != _STRATEGY_CACHE_VERSION:
+    result = normalize_strategy_cache_payload(json.loads(row[0]))
+    if result is None:
         return None
     result["from_cache"] = True
     result["cached_at"] = row[1]

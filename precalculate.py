@@ -33,7 +33,6 @@ import itertools
 import json
 import sys
 import time
-from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import Manager
 from dataclasses import dataclass
@@ -50,9 +49,8 @@ from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
 from app.database import get_connection, get_cache_connection
-
-# Keep in sync with app/routers/strategy.py _STRATEGY_CACHE_VERSION
-_STRATEGY_CACHE_VERSION = 2
+from app.strategy_cache import STRATEGY_CACHE_VERSION, normalize_strategy_cache_payload
+from app.strategy_stats import aggregate_cycles
 
 
 # ---------------------------------------------------------------------------
@@ -176,50 +174,7 @@ def _simulate_fast(
 
 
 def _aggregate_local(cycles: list[dict], tp_atr: float, level_atr: float) -> dict:
-    """Identical logic to strategy.py _aggregate — duplicated to avoid subprocess imports."""
-    buckets: dict[str, list] = defaultdict(list)
-    for c in cycles:
-        buckets[c["direction"]].append(c)
-
-    stats = {}
-    for direction, cycs in buckets.items():
-        complete = [c for c in cycs if c["completed"]]
-        maxlevel = [c for c in cycs if c["closed_max_levels"]]
-        incomplete = [c for c in cycs if not c["completed"] and not c["closed_max_levels"]]
-        total_closed = len(complete) + len(maxlevel)
-        success_rate = len(complete) / total_closed * 100 if total_closed > 0 else None
-        total_profit_atr = (
-            len(complete) * tp_atr
-            - sum(level_atr * c["max_levels"] * (c["max_levels"] + 1) / 2 for c in maxlevel)
-        ) if (complete or maxlevel) else None
-        stats[direction] = {
-            "total": len(cycs),
-            "completed": len(complete),
-            "max_levels_closed": len(maxlevel),
-            "incomplete": len(incomplete),
-            "success_rate": success_rate,
-            "total_profit_atr": total_profit_atr,
-            "avg_levels_complete": (
-                sum(c["max_levels"] for c in complete) / len(complete) if complete else None
-            ),
-            "avg_duration_complete": (
-                sum(c["duration_minutes"] for c in complete) / len(complete) if complete else None
-            ),
-            "avg_levels_incomplete": (
-                sum(c["max_levels"] for c in incomplete) / len(incomplete) if incomplete else None
-            ),
-            "avg_duration_incomplete": (
-                sum(c["duration_minutes"] for c in incomplete) / len(incomplete)
-                if incomplete else None
-            ),
-            "avg_levels_all": (
-                sum(c["max_levels"] for c in cycs) / len(cycs) if cycs else None
-            ),
-            "avg_duration_all": (
-                sum(c["duration_minutes"] for c in cycs) / len(cycs) if cycs else None
-            ),
-        }
-    return stats
+    return aggregate_cycles(cycles, tp_atr, level_atr)
 
 
 # Module-level queue; set by _worker_init() called as the ProcessPoolExecutor
@@ -275,7 +230,7 @@ def _worker_instrument(
                 "tp_atr": combo.tp_atr,
                 "level_atr": combo.level_atr,
                 "total_cycles": len(cycles),
-                "cache_version": _STRATEGY_CACHE_VERSION,
+                "cache_version": STRATEGY_CACHE_VERSION,
             }
             _result_queue.put((symbol, exchange, combo, result, None))
         except Exception as exc:  # noqa: BLE001
@@ -302,15 +257,14 @@ def _cache_exists(symbol: str, exchange: str, combo: ParamCombo) -> bool:
     if row is None:
         return False
     try:
-        data = json.loads(row[0])
-        return data.get("cache_version") == _STRATEGY_CACHE_VERSION
+        return normalize_strategy_cache_payload(json.loads(row[0])) is not None
     except Exception:
         return False
 
 
 def _save(symbol: str, exchange: str, combo: ParamCombo, result: dict) -> None:
     to_store = {k: v for k, v in result.items() if k not in ("from_cache", "cached_at")}
-    to_store["cache_version"] = _STRATEGY_CACHE_VERSION
+    to_store["cache_version"] = STRATEGY_CACHE_VERSION
     result_json = json.dumps(to_store)
     con = get_cache_connection()
     try:
@@ -429,17 +383,17 @@ def main() -> None:
         "--max-levels",
         nargs="+",
         type=int,
-        default=[5, 10, 15, 20],
+        default=[100],
         metavar="N",
-        help="List of max_levels values to test (default: 5 10 15 20)",
+        help="List of max_levels values to test (default: 100)",
     )
     parser.add_argument(
         "--tp-atr",
         nargs="+",
         type=float,
-        default=[0.25, 0.5, 0.75, 1.0, 1.5],
+        default=[0.25, 0.5, 0.75, 1.0, 1.5, 2.0],
         metavar="F",
-        help="List of tp_atr values to test (default: 0.25 0.5 0.75 1.0 1.5)",
+        help="List of tp_atr values to test (default: 0.25 0.5 0.75 1.0 1.5 2.0)",
     )
     parser.add_argument(
         "--level-atr",
