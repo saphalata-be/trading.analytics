@@ -281,6 +281,22 @@ def _weighted_average(values: list[tuple[Optional[float], int]]) -> Optional[flo
     return weighted_sum / total_weight
 
 
+def _compute_historical_position_pct(
+    historical_low: float | None,
+    historical_high: float | None,
+    current_price: float | None,
+) -> float | None:
+    if historical_low is None or historical_high is None or current_price is None:
+        return None
+
+    span = historical_high - historical_low
+    if math.isclose(span, 0.0, abs_tol=1e-12):
+        return None
+
+    position_pct = (current_price - historical_low) / span * 100
+    return max(0.0, min(100.0, position_pct))
+
+
 def _dashboard_metric_spec(metric: str) -> dict:
     for spec in _DASHBOARD_METRICS:
         if spec["value"] == metric:
@@ -765,19 +781,77 @@ def _get_mt5_swap_lookup() -> dict[str, dict[str, float | None]]:
     }
 
 
+def _get_historical_price_position_lookup(
+    instruments: list[tuple[str, str]],
+) -> dict[str, dict[str, float | None]]:
+    if not instruments:
+        return {}
+
+    values_sql = ", ".join(["(?, ?)"] * len(instruments))
+    params = [value for instrument in instruments for value in instrument]
+
+    con = get_connection()
+    try:
+        rows = con.execute(
+            f"""
+            WITH requested(symbol, exchange) AS (
+                VALUES {values_sql}
+            )
+            SELECT
+                w.symbol,
+                w.exchange,
+                w.historical_low,
+                w.historical_high,
+                w.current_price,
+                w.historical_position_pct,
+                w.latest_atr50,
+                w.atr50_eur_001_lot
+            FROM watchlist w
+            INNER JOIN requested r
+                ON w.symbol = r.symbol
+               AND w.exchange = r.exchange
+            """,
+            params,
+        ).fetchall()
+    finally:
+        con.close()
+
+    return {
+        f"{symbol}|{exchange}": {
+            "historical_low": historical_low,
+            "historical_high": historical_high,
+            "current_price": current_price,
+            "historical_position_pct": historical_position_pct,
+            "latest_atr50": latest_atr50,
+            "atr50_eur_001_lot": atr50_eur_001_lot,
+        }
+        for symbol, exchange, historical_low, historical_high, current_price, historical_position_pct, latest_atr50, atr50_eur_001_lot in rows
+    }
+
+
 def _enrich_all_results_with_mt5_swaps(payload: dict) -> dict:
     all_results = payload.get("all_results")
     if not all_results:
         return payload
 
     swap_lookup = _get_mt5_swap_lookup()
+    price_position_lookup = _get_historical_price_position_lookup(
+        [(item["symbol"], item["exchange"]) for item in all_results.values()]
+    )
     enriched_results: dict[str, dict] = {}
 
     for key, item in all_results.items():
         enriched_item = dict(item)
         swap_data = swap_lookup.get(item["symbol"], {})
+        price_position = price_position_lookup.get(key, {})
         enriched_item["swap_long"] = swap_data.get("swap_long")
         enriched_item["swap_short"] = swap_data.get("swap_short")
+        enriched_item["historical_low"] = price_position.get("historical_low")
+        enriched_item["historical_high"] = price_position.get("historical_high")
+        enriched_item["current_price"] = price_position.get("current_price")
+        enriched_item["historical_position_pct"] = price_position.get("historical_position_pct")
+        enriched_item["latest_atr50"] = price_position.get("latest_atr50")
+        enriched_item["atr50_eur_001_lot"] = price_position.get("atr50_eur_001_lot")
         enriched_results[key] = enriched_item
 
     enriched_payload = dict(payload)
@@ -1380,12 +1454,13 @@ def _get_instruments() -> list[dict]:
     try:
         rows = con.execute(
             """
-            SELECT DISTINCT o.symbol, o.exchange, i.type, COALESCE(w.preferred_direction, 'BOTH')
-            FROM ohlcv o
-            LEFT JOIN instruments i ON i.symbol = o.symbol AND i.exchange = o.exchange
-            LEFT JOIN watchlist w ON w.symbol = o.symbol AND w.exchange = o.exchange
-            WHERE o.timeframe = '1min'
-            ORDER BY o.symbol
+            SELECT w.symbol, w.exchange, i.type, COALESCE(w.preferred_direction, 'BOTH')
+            FROM watchlist w
+            INNER JOIN watchlist_timeframes wt
+                ON wt.watchlist_id = w.id
+               AND wt.timeframe = '1min'
+            LEFT JOIN instruments i ON i.symbol = w.symbol AND i.exchange = w.exchange
+            ORDER BY w.symbol
             """
         ).fetchall()
     finally:

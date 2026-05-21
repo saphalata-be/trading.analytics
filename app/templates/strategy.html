@@ -82,13 +82,15 @@
       <table class="w-full text-sm">
         <thead>
           <tr class="text-xs text-gray-500 border-b border-gray-700 bg-gray-800/50">
-            <th class="text-left px-4 py-3 font-medium">Instrument</th>
+            <th class="text-left px-4 py-3 font-medium" rowspan="2">Instrument</th>
+            <th class="text-right px-4 py-3 font-medium" rowspan="2">Position hist.</th>
+            <th class="text-right px-4 py-3 font-medium" rowspan="2">ATR50</th>
+            <th class="text-right px-4 py-3 font-medium" rowspan="2">1 ATR €<br><span class="text-[10px] text-gray-600">0.01 lot</span></th>
+            <th class="text-center px-4 py-3 font-medium" rowspan="2">Détail</th>
             <th class="text-center px-4 py-3 font-medium text-emerald-400" colspan="6">▲ ACHAT</th>
             <th class="text-center px-4 py-3 font-medium text-red-400" colspan="6">▼ VENTE</th>
           </tr>
           <tr class="text-xs text-gray-600 border-b border-gray-700">
-            <th class="px-4 py-2"></th>
-            <th class="text-center px-3 py-2 font-medium border-r border-gray-700">Détail</th>
             <th class="text-right px-3 py-2 font-medium">Réussite</th>
             <th class="text-right px-3 py-2 font-medium">Niv. moy.</th>
             <th class="text-right px-3 py-2 font-medium">Niv. max</th>
@@ -111,6 +113,31 @@
             <td class="px-4 py-3 text-gray-200 font-medium">
               {{ data.symbol }}
               <span class="text-gray-500 text-xs ml-1">{{ data.exchange }}</span>
+            </td>
+            <td class="px-3 py-3 text-right">
+              {% if data.historical_position_pct is not none %}
+              <div class="inline-flex min-w-[6rem] flex-col items-end gap-1"
+                   title="Min historique : {{ '%.5f'|format(data.historical_low) }} · Prix actuel : {{ '%.5f'|format(data.current_price) }} · Max historique : {{ '%.5f'|format(data.historical_high) }}">
+                <span class="font-mono text-cyan-200">{{ '%.1f'|format(data.historical_position_pct) }}%</span>
+                <span class="font-mono text-[11px] text-gray-500">{{ '%.5f'|format(data.current_price) }}</span>
+              </div>
+              {% else %}
+              <span class="text-gray-500">—</span>
+              {% endif %}
+            </td>
+            <td class="px-3 py-3 text-right">
+              {% if data.latest_atr50 is not none %}
+              <span class="font-mono text-white" title="Moyenne des 50 dernières bougies journalières (high-low)">{{ '%.5f'|format(data.latest_atr50) }}</span>
+              {% else %}
+              <span class="text-gray-500">—</span>
+              {% endif %}
+            </td>
+            <td class="px-3 py-3 text-right">
+              {% if data.atr50_eur_001_lot is not none %}
+              <span class="font-mono text-amber-300" title="Valeur approximative d'un ATR50 pour un achat de 0.01 lot, convertie en EUR">{{ '%.2f'|format(data.atr50_eur_001_lot) }}</span>
+              {% else %}
+              <span class="text-gray-500">—</span>
+              {% endif %}
             </td>
             <td class="px-3 py-3 text-center border-r border-gray-700">
               <button type="button"

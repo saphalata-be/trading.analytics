@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.config import HISTORY_FILES_EXCHANGE, HISTORY_FILES_PATH
-from app.database import get_connection, reset_strategy_cache, reset_trading_tables
+from app.database import get_connection, refresh_watchlist_market_metrics, reset_strategy_cache, reset_trading_tables
 from app.trade_direction import DEFAULT_TRADE_DIRECTION, normalize_trade_direction
 
 _TIMEFRAME_MAP = {
@@ -191,6 +191,8 @@ def import_history_files(
                     """,
                     [watchlist_id, item.timeframe, first_date, last_date, bars],
                 )
+
+        refresh_watchlist_market_metrics(con)
     finally:
         con.close()
 
