@@ -51,6 +51,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 from app.database import get_connection, get_cache_connection
 from app.strategy_cache import STRATEGY_CACHE_VERSION, normalize_strategy_cache_payload
 from app.strategy_stats import aggregate_cycles
+from app.trade_direction import expand_trade_directions, normalize_trade_direction
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +160,7 @@ def _simulate_fast(
     max_levels: int,
     tp_atr: float,
     level_atr: float,
+    direction_mode: str,
 ) -> list[dict]:
     """Full simulation over all hourly cycle starts. No DB, no datetime."""
     results = []
@@ -166,7 +168,7 @@ def _simulate_fast(
         atr50 = atr50_by_idx.get(start_idx)
         if not atr50:
             continue
-        for direction in ("LONG", "SHORT"):
+        for direction in expand_trade_directions(direction_mode):
             cycle = _run_cycle_fast(
                 bars_open, bars_high, bars_low, bar_ts_min, bar_days,
                 start_idx, atr50, max_levels, tp_atr, level_atr, direction,
@@ -199,6 +201,7 @@ def _worker_init(q) -> None:
 def _worker_instrument(
     symbol: str,
     exchange: str,
+    direction_mode: str,
     bars_open: list,
     bars_high: list,
     bars_low: list,
@@ -219,7 +222,7 @@ def _worker_instrument(
             cycles = _simulate_fast(
                 bars_open, bars_high, bars_low, bar_ts_min, bar_days,
                 hourly_indices, atr50_by_idx,
-                combo.max_levels, combo.tp_atr, combo.level_atr,
+                combo.max_levels, combo.tp_atr, combo.level_atr, direction_mode,
             )
             if not cycles:
                 _result_queue.put((symbol, exchange, combo, None, f"Aucune donnée 1min pour {symbol} ({exchange})"))
@@ -230,6 +233,7 @@ def _worker_instrument(
                 "error": None,
                 "selected_symbol": symbol,
                 "selected_exchange": exchange,
+                "direction_mode": normalize_trade_direction(direction_mode),
                 "max_levels": combo.max_levels,
                 "tp_atr": combo.tp_atr,
                 "level_atr": combo.level_atr,
@@ -246,7 +250,7 @@ def _worker_instrument(
 # ---------------------------------------------------------------------------
 
 
-def _cache_exists(symbol: str, exchange: str, combo: ParamCombo) -> bool:
+def _cache_exists(symbol: str, exchange: str, combo: ParamCombo, direction_mode: str) -> bool:
     con = get_cache_connection()
     try:
         row = con.execute(
@@ -261,7 +265,8 @@ def _cache_exists(symbol: str, exchange: str, combo: ParamCombo) -> bool:
     if row is None:
         return False
     try:
-        return normalize_strategy_cache_payload(json.loads(row[0])) is not None
+        payload = normalize_strategy_cache_payload(json.loads(row[0]))
+        return payload is not None and payload.get("direction_mode") == normalize_trade_direction(direction_mode)
     except Exception:
         return False
 
@@ -293,22 +298,39 @@ def _save(symbol: str, exchange: str, combo: ParamCombo, result: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get_instruments(con, symbol: str | None, exchange: str | None) -> list[tuple[str, str]]:
+def _get_instruments(con, symbol: str | None, exchange: str | None) -> list[tuple[str, str, str]]:
     if symbol and exchange:
         rows = con.execute(
-            "SELECT DISTINCT symbol, exchange FROM ohlcv WHERE symbol=? AND exchange=? AND timeframe='1min'",
+            """
+            SELECT DISTINCT o.symbol, o.exchange, COALESCE(w.preferred_direction, 'BOTH')
+            FROM ohlcv o
+            LEFT JOIN watchlist w ON w.symbol = o.symbol AND w.exchange = o.exchange
+            WHERE o.symbol=? AND o.exchange=? AND o.timeframe='1min'
+            """,
             [symbol, exchange],
         ).fetchall()
     elif symbol:
         rows = con.execute(
-            "SELECT DISTINCT symbol, exchange FROM ohlcv WHERE symbol=? AND timeframe='1min'",
+            """
+            SELECT DISTINCT o.symbol, o.exchange, COALESCE(w.preferred_direction, 'BOTH')
+            FROM ohlcv o
+            LEFT JOIN watchlist w ON w.symbol = o.symbol AND w.exchange = o.exchange
+            WHERE o.symbol=? AND o.timeframe='1min'
+            ORDER BY o.symbol
+            """,
             [symbol],
         ).fetchall()
     else:
         rows = con.execute(
-            "SELECT DISTINCT symbol, exchange FROM ohlcv WHERE timeframe='1min' ORDER BY symbol"
+            """
+            SELECT DISTINCT o.symbol, o.exchange, COALESCE(w.preferred_direction, 'BOTH')
+            FROM ohlcv o
+            LEFT JOIN watchlist w ON w.symbol = o.symbol AND w.exchange = o.exchange
+            WHERE o.timeframe='1min'
+            ORDER BY o.symbol
+            """
         ).fetchall()
-    return [(r[0], r[1]) for r in rows]
+    return [(r[0], r[1], normalize_trade_direction(r[2])) for r in rows]
 
 
 def _load_instrument_data(
@@ -389,25 +411,25 @@ def main() -> None:
         "--max-levels",
         nargs="+",
         type=int,
-        default=[100],
+        default=[20],
         metavar="N",
-        help="List of max_levels values to test (default: 100)",
+        help="List of max_levels values to test (default: 20)",
     )
     parser.add_argument(
         "--tp-atr",
         nargs="+",
         type=float,
-        default=[2.0],
+        default=[0.5, 1.0, 1.5],
         metavar="F",
-        help="List of tp_atr values to test (default: 0.25 0.5 0.75 1.0 1.5 2.0)",
+        help="List of tp_atr values to test (default: 0.5 1.0 1.5)",
     )
     parser.add_argument(
         "--level-atr",
         nargs="+",
         type=float,
-        default=[2.0],
+        default=[0.5, 1.0, 1.5],
         metavar="F",
-        help="List of level_atr values to test (default: 0.25 0.5 0.75 1.0 1.5 2.0)",
+        help="List of level_atr values to test (default: 0.5 1.0 1.5)",
     )
     parser.add_argument(
         "--symbol",
@@ -477,9 +499,9 @@ def main() -> None:
         ) as pool:
             futures: dict = {}
             try:
-                for i, (symbol, exchange) in enumerate(instruments, 1):
+                for i, (symbol, exchange, direction_mode) in enumerate(instruments, 1):
                     if not args.force:
-                        combos = [c for c in all_combos if not _cache_exists(symbol, exchange, c)]
+                        combos = [c for c in all_combos if not _cache_exists(symbol, exchange, c, direction_mode)]
                     else:
                         combos = list(all_combos)
 
@@ -489,7 +511,10 @@ def main() -> None:
                     if not combos:
                         continue
 
-                    print(f"  Chargement [{i}/{len(instruments)}] {symbol} ({exchange})...", flush=True)
+                    print(
+                        f"  Chargement [{i}/{len(instruments)}] {symbol} ({exchange}) [{direction_mode}]...",
+                        flush=True,
+                    )
                     # Open and close a connection per instrument so that trading.duckdb
                     # is only locked for the duration of the SQL queries (~seconds each).
                     # This lets the web app connect freely between instrument loads.
@@ -510,7 +535,7 @@ def main() -> None:
                     for combo_batch in combo_batches:
                         future = pool.submit(
                             _worker_instrument,
-                            symbol, exchange,
+                            symbol, exchange, direction_mode,
                             bars_open, bars_high, bars_low,
                             bar_ts_min, bar_days, hourly_indices, atr50_by_idx,
                             combo_batch,

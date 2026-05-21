@@ -10,7 +10,7 @@
     <div class="p-5 space-y-4" id="watchlist-item-{{ item.id }}">
 
       <!-- Instrument header -->
-      <div class="flex items-center justify-between">
+      <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div class="flex items-center gap-3">
           <div>
             <span class="font-mono font-bold text-indigo-300 text-base">{{ item.symbol }}</span>
@@ -27,6 +27,41 @@
             {{ item.type }}
           </span>
           {% endif %}
+        </div>
+
+        <div class="flex flex-col gap-3 md:flex-row md:items-end">
+          <div class="grid grid-cols-2 gap-3">
+            <div class="min-w-32 rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-gray-500">Swap long</div>
+              <div class="mt-1 font-mono text-sm {% if item.swap_long is not none %}{% if item.swap_long > 0 %}text-emerald-400{% elif item.swap_long < 0 %}text-red-400{% else %}text-gray-400{% endif %}{% else %}text-gray-500{% endif %}">
+                {% if item.swap_long is not none %}{{ "%.4f"|format(item.swap_long) }}{% else %}—{% endif %}
+              </div>
+            </div>
+            <div class="min-w-32 rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-gray-500">Swap short</div>
+              <div class="mt-1 font-mono text-sm {% if item.swap_short is not none %}{% if item.swap_short > 0 %}text-emerald-400{% elif item.swap_short < 0 %}text-red-400{% else %}text-gray-400{% endif %}{% else %}text-gray-500{% endif %}">
+                {% if item.swap_short is not none %}{{ "%.4f"|format(item.swap_short) }}{% else %}—{% endif %}
+              </div>
+            </div>
+          </div>
+
+          <form method="post" action="/data/trade-direction" class="flex flex-col gap-2 md:min-w-64">
+            <input type="hidden" name="watchlist_id" value="{{ item.id }}">
+            <label class="text-xs text-gray-400">Sens de trading</label>
+            <div class="flex gap-2">
+              <select name="preferred_direction"
+                      class="flex-1 rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                {% for option in trade_direction_options %}
+                <option value="{{ option.value }}" {% if option.value == item.preferred_direction %}selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit"
+                      class="inline-flex items-center justify-center rounded-lg border border-indigo-700 bg-indigo-900/30 px-3 py-2 text-xs font-medium text-indigo-200 transition-colors hover:bg-indigo-900/50">
+                Appliquer
+              </button>
+            </div>
+            <p class="text-[11px] text-gray-500">Le cache stratégie de cet instrument sera recalculé au prochain lancement.</p>
+          </form>
         </div>
       </div>
 

@@ -1,5 +1,7 @@
 import duckdb
+
 from app.config import DATABASE_PATH, CACHE_DATABASE_PATH
+from app.trade_direction import DEFAULT_TRADE_DIRECTION
 
 
 def get_connection() -> duckdb.DuckDBPyConnection:
@@ -31,6 +33,7 @@ def init_db() -> None:
             symbol          VARCHAR NOT NULL,
             exchange        VARCHAR NOT NULL,
             instrument_type VARCHAR,
+            preferred_direction VARCHAR DEFAULT 'BOTH',
             added_at        TIMESTAMP DEFAULT current_timestamp
         )
     """)
@@ -90,6 +93,19 @@ def init_db() -> None:
             PRIMARY KEY (basket_id, symbol, exchange)
         )
     """)
+
+    watchlist_columns = {
+        row[1]
+        for row in con.execute("PRAGMA table_info('watchlist')").fetchall()
+    }
+    if "preferred_direction" not in watchlist_columns:
+        con.execute(
+            f"ALTER TABLE watchlist ADD COLUMN preferred_direction VARCHAR DEFAULT '{DEFAULT_TRADE_DIRECTION}'"
+        )
+    con.execute(
+        "UPDATE watchlist SET preferred_direction = ? WHERE preferred_direction IS NULL",
+        [DEFAULT_TRADE_DIRECTION],
+    )
 
     con.close()
 

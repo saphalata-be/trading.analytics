@@ -31,15 +31,18 @@ from fastapi.templating import Jinja2Templates
 from app.database import get_connection, get_cache_connection
 from app.strategy_cache import STRATEGY_CACHE_VERSION, normalize_strategy_cache_payload
 from app.strategy_stats import aggregate_cycles
+from app.trade_direction import (
+    DEFAULT_TRADE_DIRECTION,
+    TRADE_DIRECTION_OPTIONS,
+    expand_trade_directions,
+    normalize_trade_direction,
+    trade_direction_label,
+)
 
 # In-memory job store: job_id -> {"queue": asyncio.Queue, "result": dict | None}
 _jobs: dict[str, dict] = {}
 
-_DASHBOARD_DIRECTIONS = [
-    {"value": "BOTH", "label": "Long + Short"},
-    {"value": "LONG", "label": "Long uniquement"},
-    {"value": "SHORT", "label": "Short uniquement"},
-]
+_DASHBOARD_DIRECTIONS = TRADE_DIRECTION_OPTIONS
 
 _DASHBOARD_METRICS = [
     {
@@ -105,6 +108,7 @@ def _simulate_cycles(
     tp_atr: float,
     level_atr: float,
     con,
+    direction_mode: str = DEFAULT_TRADE_DIRECTION,
 ) -> list[dict]:
     """Run the full simulation and return a list of cycle result dicts."""
     # Fetch all 1min bars ordered chronologically
@@ -145,7 +149,7 @@ def _simulate_cycles(
             continue
 
         # Simulate LONG and SHORT cycles from this start point
-        for direction in ("LONG", "SHORT"):
+        for direction in expand_trade_directions(direction_mode):
             cycle = _run_cycle(
                 bars=bars,
                 start_idx=start_idx,
@@ -285,10 +289,7 @@ def _dashboard_metric_spec(metric: str) -> dict:
 
 
 def _dashboard_direction_label(direction: str) -> str:
-    for option in _DASHBOARD_DIRECTIONS:
-        if option["value"] == direction:
-            return option["label"]
-    return _DASHBOARD_DIRECTIONS[0]["label"]
+    return trade_direction_label(direction)
 
 
 def _merge_level_reach_stats(long_stats: dict, short_stats: dict, total_cycles: int) -> list[dict]:
@@ -447,12 +448,15 @@ def _dashboard_combo_matches(
     focus_max_levels: int | None,
     focus_tp_atr: float | None,
     focus_level_atr: float | None,
+    focus_trade_direction: str | None,
 ) -> bool:
     if focus_max_levels is not None and row["max_levels"] != focus_max_levels:
         return False
     if focus_tp_atr is not None and not math.isclose(row["tp_atr"], focus_tp_atr, rel_tol=1e-9, abs_tol=1e-9):
         return False
     if focus_level_atr is not None and not math.isclose(row["level_atr"], focus_level_atr, rel_tol=1e-9, abs_tol=1e-9):
+        return False
+    if focus_trade_direction is not None and row["direction_mode"] != focus_trade_direction:
         return False
     return True
 
@@ -463,6 +467,7 @@ def _build_strategy_dashboard(
     focus_max_levels: int | None,
     focus_tp_atr: float | None,
     focus_level_atr: float | None,
+    focus_trade_direction: str | None,
 ) -> dict:
     metric_spec = _dashboard_metric_spec(metric)
     direction = direction if direction in {"BOTH", "LONG", "SHORT"} else "BOTH"
@@ -481,7 +486,7 @@ def _build_strategy_dashboard(
 
     entries: list[dict] = []
     instruments_seen: set[tuple[str, str]] = set()
-    combo_seen: set[tuple[int, float, float]] = set()
+    combo_seen: set[tuple[int, float, float, str]] = set()
     max_levels_values: set[int] = set()
     tp_atr_values: set[float] = set()
     level_atr_values: set[float] = set()
@@ -498,6 +503,7 @@ def _build_strategy_dashboard(
         if payload.get("error") or payload.get("results") is None:
             continue
 
+        direction_mode = normalize_trade_direction(payload.get("direction_mode"))
         stats = _merge_direction_stats(payload["results"], direction)
         if not stats or (stats.get("total") or 0) == 0:
             continue
@@ -510,7 +516,9 @@ def _build_strategy_dashboard(
             "max_levels": max_levels,
             "tp_atr": tp_atr,
             "level_atr": level_atr,
-            "combo_key": f"{max_levels}|{tp_atr}|{level_atr}",
+            "direction_mode": direction_mode,
+            "direction_mode_label": trade_direction_label(direction_mode),
+            "combo_key": f"{max_levels}|{tp_atr}|{level_atr}|{direction_mode}",
             "computed_at": computed_at,
             "direction_cycles": stats.get("total") or 0,
             "overall_cycles": payload.get("total_cycles") or 0,
@@ -521,16 +529,21 @@ def _build_strategy_dashboard(
         entries.append(entry)
 
         instruments_seen.add((symbol, exchange))
-        combo_seen.add((max_levels, tp_atr, level_atr))
+        combo_seen.add((max_levels, tp_atr, level_atr, direction_mode))
         max_levels_values.add(max_levels)
         tp_atr_values.add(tp_atr)
         level_atr_values.add(level_atr)
         if latest_computed_at is None or computed_at > latest_computed_at:
             latest_computed_at = computed_at
 
-    combo_map: dict[tuple[int, float, float], dict] = {}
+    combo_map: dict[tuple[int, float, float, str], dict] = {}
     for entry in entries:
-        key = (entry["max_levels"], entry["tp_atr"], entry["level_atr"])
+        key = (
+            entry["max_levels"],
+            entry["tp_atr"],
+            entry["level_atr"],
+            entry["direction_mode"],
+        )
         stats = entry["stats"]
         combo = combo_map.setdefault(
             key,
@@ -538,6 +551,8 @@ def _build_strategy_dashboard(
                 "max_levels": entry["max_levels"],
                 "tp_atr": entry["tp_atr"],
                 "level_atr": entry["level_atr"],
+                "direction_mode": entry["direction_mode"],
+                "direction_mode_label": entry["direction_mode_label"],
                 "instruments_count": 0,
                 "direction_cycles": 0,
                 "overall_cycles": 0,
@@ -617,8 +632,19 @@ def _build_strategy_dashboard(
 
     focus_combo = None
     if leaderboard:
+        normalized_focus_trade_direction = (
+            normalize_trade_direction(focus_trade_direction)
+            if focus_trade_direction is not None
+            else None
+        )
         for row in leaderboard:
-            if _dashboard_combo_matches(row, focus_max_levels, focus_tp_atr, focus_level_atr):
+            if _dashboard_combo_matches(
+                row,
+                focus_max_levels,
+                focus_tp_atr,
+                focus_level_atr,
+                normalized_focus_trade_direction,
+            ):
                 focus_combo = row
                 break
         if focus_combo is None:
@@ -632,6 +658,7 @@ def _build_strategy_dashboard(
             if entry["max_levels"] == focus_combo["max_levels"]
             and math.isclose(entry["tp_atr"], focus_combo["tp_atr"], rel_tol=1e-9, abs_tol=1e-9)
             and math.isclose(entry["level_atr"], focus_combo["level_atr"], rel_tol=1e-9, abs_tol=1e-9)
+            and entry["direction_mode"] == focus_combo["direction_mode"]
         ]
         focus_instruments = _dashboard_sort_rows(
             focus_instruments,
@@ -671,6 +698,10 @@ def _build_strategy_dashboard(
             "max_levels_values": sorted(max_levels_values),
             "tp_atr_values": sorted(tp_atr_values),
             "level_atr_values": sorted(level_atr_values),
+            "trade_direction_values": [
+                trade_direction_label(value)
+                for value in sorted({entry["direction_mode"] for entry in entries})
+            ],
         },
         "leaderboard": leaderboard[:25],
         "focus_combo": focus_combo,
@@ -685,7 +716,12 @@ def _build_strategy_dashboard(
 
 
 def _load_cache(
-    symbol: str, exchange: str, max_levels: int, tp_atr: float, level_atr: float
+    symbol: str,
+    exchange: str,
+    max_levels: int,
+    tp_atr: float,
+    level_atr: float,
+    direction_mode: str,
 ) -> dict | None:
     """Return cached result dict (with from_cache/cached_at keys) or None."""
     con = get_cache_connection()
@@ -703,6 +739,8 @@ def _load_cache(
         return None
     result = normalize_strategy_cache_payload(json.loads(row[0]))
     if result is None:
+        return None
+    if result.get("direction_mode") != normalize_trade_direction(direction_mode):
         return None
     result["from_cache"] = True
     result["cached_at"] = row[1]
@@ -759,13 +797,23 @@ def _load_all_instruments_from_cache(
     latest_cached_at = None
 
     for inst in instruments:
-        cached = _load_cache(inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr)
+        direction_mode = inst.get("preferred_direction", DEFAULT_TRADE_DIRECTION)
+        cached = _load_cache(
+            inst["symbol"],
+            inst["exchange"],
+            max_levels,
+            tp_atr,
+            level_atr,
+            direction_mode,
+        )
         if cached is None or cached.get("error") or cached.get("results") is None:
             return None
 
         all_results[f"{inst['symbol']}|{inst['exchange']}"] = {
             "symbol": inst["symbol"],
             "exchange": inst["exchange"],
+            "direction_mode": direction_mode,
+            "direction_mode_label": trade_direction_label(direction_mode),
             "stats": cached["results"],
             "total_cycles": cached.get("total_cycles", 0),
         }
@@ -799,7 +847,7 @@ def _save_cache(
         for k, v in result.items()
         if k not in ("from_cache", "cached_at")
     }
-    to_store["cache_version"] = _STRATEGY_CACHE_VERSION
+    to_store["cache_version"] = STRATEGY_CACHE_VERSION
     result_json = json.dumps(to_store)
     con = get_cache_connection()
     try:
@@ -824,11 +872,26 @@ def _save_cache(
 # ---------------------------------------------------------------------------
 
 
-def _simulate_cycles_new_conn(symbol: str, exchange: str, max_levels: int, tp_atr: float, level_atr: float) -> list[dict]:
+def _simulate_cycles_new_conn(
+    symbol: str,
+    exchange: str,
+    max_levels: int,
+    tp_atr: float,
+    level_atr: float,
+    direction_mode: str,
+) -> list[dict]:
     """Thread-safe wrapper: opens its own DuckDB connection."""
     con = get_connection()
     try:
-        return _simulate_cycles(symbol, exchange, max_levels, tp_atr, level_atr, con)
+        return _simulate_cycles(
+            symbol,
+            exchange,
+            max_levels,
+            tp_atr,
+            level_atr,
+            con,
+            direction_mode,
+        )
     finally:
         con.close()
 
@@ -851,11 +914,21 @@ async def _run_simulation_job(
             total_cycles_all = 0
             total = len(instruments)
             for idx, inst in enumerate(instruments):
-                cached = _load_cache(inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr)
+                direction_mode = inst.get("preferred_direction", DEFAULT_TRADE_DIRECTION)
+                cached = _load_cache(
+                    inst["symbol"],
+                    inst["exchange"],
+                    max_levels,
+                    tp_atr,
+                    level_atr,
+                    direction_mode,
+                )
                 if cached is not None and not cached.get("error") and cached.get("results") is not None:
                     all_results[f"{inst['symbol']}|{inst['exchange']}"] = {
                         "symbol": inst["symbol"],
                         "exchange": inst["exchange"],
+                        "direction_mode": direction_mode,
+                        "direction_mode_label": trade_direction_label(direction_mode),
                         "stats": cached["results"],
                         "total_cycles": cached.get("total_cycles", 0),
                     }
@@ -875,7 +948,14 @@ async def _run_simulation_job(
                     "label": inst["symbol"],
                 })
                 cycles = await loop.run_in_executor(
-                    None, _simulate_cycles_new_conn, inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr
+                    None,
+                    _simulate_cycles_new_conn,
+                    inst["symbol"],
+                    inst["exchange"],
+                    max_levels,
+                    tp_atr,
+                    level_atr,
+                    direction_mode,
                 )
                 if cycles:
                     instrument_result = {
@@ -884,6 +964,7 @@ async def _run_simulation_job(
                         "error": None,
                         "selected_symbol": inst["symbol"],
                         "selected_exchange": inst["exchange"],
+                        "direction_mode": direction_mode,
                         "max_levels": max_levels,
                         "tp_atr": tp_atr,
                         "level_atr": level_atr,
@@ -897,6 +978,8 @@ async def _run_simulation_job(
                     all_results[f"{inst['symbol']}|{inst['exchange']}"] = {
                         "symbol": inst["symbol"],
                         "exchange": inst["exchange"],
+                        "direction_mode": direction_mode,
+                        "direction_mode_label": trade_direction_label(direction_mode),
                         "stats": instrument_result["results"],
                         "total_cycles": len(cycles),
                     }
@@ -913,9 +996,29 @@ async def _run_simulation_job(
                 "total_cycles": total_cycles_all,
             }
         else:
+            instrument = next(
+                (
+                    item
+                    for item in instruments
+                    if item["symbol"] == symbol and item["exchange"] == exchange
+                ),
+                None,
+            )
+            direction_mode = (
+                instrument.get("preferred_direction", DEFAULT_TRADE_DIRECTION)
+                if instrument is not None
+                else DEFAULT_TRADE_DIRECTION
+            )
             await q.put({"type": "progress", "current": 0, "total": 1, "label": symbol})
             cycles = await loop.run_in_executor(
-                None, _simulate_cycles_new_conn, symbol, exchange, max_levels, tp_atr, level_atr
+                None,
+                _simulate_cycles_new_conn,
+                symbol,
+                exchange,
+                max_levels,
+                tp_atr,
+                level_atr,
+                direction_mode,
             )
             await q.put({"type": "progress", "current": 1, "total": 1, "label": symbol})
             if not cycles:
@@ -925,6 +1028,7 @@ async def _run_simulation_job(
                     "error": f"Aucune donnée 1min disponible pour {symbol} ({exchange}).",
                     "selected_symbol": symbol,
                     "selected_exchange": exchange,
+                    "direction_mode": direction_mode,
                     "max_levels": max_levels,
                     "tp_atr": tp_atr,
                     "level_atr": level_atr,
@@ -936,6 +1040,7 @@ async def _run_simulation_job(
                     "error": None,
                     "selected_symbol": symbol,
                     "selected_exchange": exchange,
+                    "direction_mode": direction_mode,
                     "max_levels": max_levels,
                     "tp_atr": tp_atr,
                     "level_atr": level_atr,
@@ -984,6 +1089,7 @@ async def strategy_dashboard(
     focus_max_levels: int | None = None,
     focus_tp_atr: float | None = None,
     focus_level_atr: float | None = None,
+    focus_trade_direction: str | None = None,
 ):
     return templates.TemplateResponse(
         "strategy_dashboard.html",
@@ -995,6 +1101,7 @@ async def strategy_dashboard(
                 focus_max_levels,
                 focus_tp_atr,
                 focus_level_atr,
+                focus_trade_direction,
             ),
         },
     )
@@ -1018,14 +1125,29 @@ async def strategy_run(
         level_atr = 1.0
 
     instruments = _get_instruments()
+    instrument = next(
+        (
+            item
+            for item in instruments
+            if item["symbol"] == symbol and item["exchange"] == exchange
+        ),
+        None,
+    )
+    direction_mode = (
+        instrument.get("preferred_direction", DEFAULT_TRADE_DIRECTION)
+        if instrument is not None
+        else DEFAULT_TRADE_DIRECTION
+    )
 
     if not force:
         if symbol == "__ALL__":
             cached = _load_all_instruments_from_cache(instruments, max_levels, tp_atr, level_atr)
         else:
-            cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr)
+            cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr, direction_mode)
         if cached is not None:
             cached = _enrich_all_results_with_mt5_swaps(cached)
+            if symbol != "__ALL__":
+                cached["selected_direction_mode_label"] = trade_direction_label(cached.get("direction_mode"))
             return templates.TemplateResponse(
                 "strategy.html",
                 {"request": request, "instruments": instruments, **cached},
@@ -1045,6 +1167,8 @@ async def strategy_run(
             "error": None,
             "selected_symbol": symbol,
             "selected_exchange": exchange,
+            "selected_direction_mode": direction_mode,
+            "selected_direction_mode_label": trade_direction_label(direction_mode),
             "max_levels": max_levels,
             "tp_atr": tp_atr,
             "level_atr": level_atr,
@@ -1094,6 +1218,8 @@ async def strategy_result(request: Request, job_id: str):
         )
     instruments = _get_instruments()
     result = _enrich_all_results_with_mt5_swaps(job["result"])
+    if result.get("selected_symbol") and result.get("selected_symbol") != "__ALL__":
+        result["selected_direction_mode_label"] = trade_direction_label(result.get("direction_mode"))
     return templates.TemplateResponse(
         "strategy.html",
         {"request": request, "instruments": instruments, **result},
@@ -1105,13 +1231,23 @@ def _get_instruments() -> list[dict]:
     try:
         rows = con.execute(
             """
-            SELECT DISTINCT o.symbol, o.exchange, i.type
+            SELECT DISTINCT o.symbol, o.exchange, i.type, COALESCE(w.preferred_direction, 'BOTH')
             FROM ohlcv o
             LEFT JOIN instruments i ON i.symbol = o.symbol AND i.exchange = o.exchange
+            LEFT JOIN watchlist w ON w.symbol = o.symbol AND w.exchange = o.exchange
             WHERE o.timeframe = '1min'
             ORDER BY o.symbol
             """
         ).fetchall()
     finally:
         con.close()
-    return [{"symbol": r[0], "exchange": r[1], "type": r[2]} for r in rows]
+    return [
+        {
+            "symbol": r[0],
+            "exchange": r[1],
+            "type": r[2],
+            "preferred_direction": normalize_trade_direction(r[3]),
+            "preferred_direction_label": trade_direction_label(r[3]),
+        }
+        for r in rows
+    ]

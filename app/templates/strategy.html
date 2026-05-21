@@ -48,6 +48,7 @@
         </select>
         <input type="hidden" name="exchange" id="exchange-input"
                value="{% if selected_symbol == '__ALL__' %}{% elif selected_exchange %}{{ selected_exchange }}{% else %}{{ instruments[0].exchange if instruments else '' }}{% endif %}">
+         <p class="text-xs text-gray-500">Le sens simulé est piloté par la configuration de chaque instrument dans la page Données.</p>
         {% else %}
          <p class="text-sm text-amber-400">Aucun instrument avec données 1min importées.</p>
         {% endif %}
@@ -272,7 +273,7 @@
   <div class="space-y-6">
     <div class="flex items-center gap-3">
       <h2 class="text-base font-semibold text-gray-200">Résultats — {{ selected_symbol }} ({{ selected_exchange }})</h2>
-      <span class="text-xs text-gray-500">{{ total_cycles }} cycles simulés · niveaux max = {{ max_levels }} · TP = {{ tp_atr }}× ATR50 · espacement = {{ level_atr }}× ATR50</span>
+      <span class="text-xs text-gray-500">{{ total_cycles }} cycles simulés · {{ selected_direction_mode_label if selected_direction_mode_label else 'Long + Short' }} · niveaux max = {{ max_levels }} · TP = {{ tp_atr }}× ATR50 · espacement = {{ level_atr }}× ATR50</span>
       {% if from_cache is defined and from_cache %}
       <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
         ⚡ Cache{% if cached_at is defined and cached_at %} — {{ cached_at.strftime('%d/%m/%Y %H:%M') }}{% endif %}

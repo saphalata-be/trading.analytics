@@ -6,6 +6,7 @@ from typing import Callable
 
 from app.config import HISTORY_FILES_EXCHANGE, HISTORY_FILES_PATH
 from app.database import get_connection, reset_strategy_cache, reset_trading_tables
+from app.trade_direction import DEFAULT_TRADE_DIRECTION, normalize_trade_direction
 
 _TIMEFRAME_MAP = {
     "1m": "1min",
@@ -84,6 +85,23 @@ def reset_imported_data() -> None:
     reset_strategy_cache()
 
 
+def _load_existing_preferred_directions() -> dict[tuple[str, str], str]:
+    con = get_connection()
+    try:
+        rows = con.execute(
+            "SELECT symbol, exchange, preferred_direction FROM watchlist"
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
+    finally:
+        con.close()
+
+    return {
+        (symbol, exchange): normalize_trade_direction(preferred_direction)
+        for symbol, exchange, preferred_direction in rows
+    }
+
+
 def import_history_files(
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> ImportSummary:
@@ -93,6 +111,7 @@ def import_history_files(
             f"Aucun fichier CSV reconnu dans {HISTORY_FILES_PATH}"
         )
 
+    preferred_directions = _load_existing_preferred_directions()
     reset_imported_data()
 
     con = get_connection()
@@ -115,10 +134,19 @@ def import_history_files(
             )
             con.execute(
                 """
-                INSERT INTO watchlist (id, symbol, exchange, instrument_type)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO watchlist (id, symbol, exchange, instrument_type, preferred_direction)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                [watchlist_id, symbol, HISTORY_FILES_EXCHANGE, instrument_type],
+                [
+                    watchlist_id,
+                    symbol,
+                    HISTORY_FILES_EXCHANGE,
+                    instrument_type,
+                    preferred_directions.get(
+                        (symbol, HISTORY_FILES_EXCHANGE),
+                        DEFAULT_TRADE_DIRECTION,
+                    ),
+                ],
             )
 
             for file_index, item in enumerate(files_for_symbol, start=1):

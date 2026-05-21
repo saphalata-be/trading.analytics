@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-STRATEGY_CACHE_VERSION = 4
+from app.trade_direction import normalize_trade_direction
+
+STRATEGY_CACHE_VERSION = 5
 SUPPORTED_STRATEGY_CACHE_VERSIONS = {STRATEGY_CACHE_VERSION}
 
 _PEAK_LEVEL_FIELDS = (
@@ -31,6 +33,7 @@ def normalize_strategy_cache_payload(payload: dict | None) -> dict | None:
 
     normalized = dict(payload)
     normalized["cache_version"] = STRATEGY_CACHE_VERSION
+    normalized["direction_mode"] = normalize_trade_direction(payload.get("direction_mode"))
 
     results = normalized.get("results")
     if isinstance(results, dict):
