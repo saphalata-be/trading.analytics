@@ -838,6 +838,128 @@ def _load_all_instruments_from_cache(
     }
 
 
+def _cache_selection_value(
+    scope: str,
+    symbol: str,
+    exchange: str,
+    max_levels: int,
+    tp_atr: float,
+    level_atr: float,
+) -> str:
+    return "|".join(
+        [
+            scope,
+            symbol,
+            exchange,
+            str(max_levels),
+            f"{tp_atr:.12g}",
+            f"{level_atr:.12g}",
+        ]
+    )
+
+
+def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
+    con = get_cache_connection()
+    try:
+        rows = con.execute(
+            """
+            SELECT symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json
+            FROM strategy_cache
+            ORDER BY computed_at DESC, symbol ASC, exchange ASC
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    combo_rows: dict[tuple[int, float, float], set[tuple[str, str, str]]] = {}
+    combo_latest_at: dict[tuple[int, float, float], datetime] = {}
+    required_combo_rows = {
+        (
+            inst["symbol"],
+            inst["exchange"],
+            inst.get("preferred_direction", DEFAULT_TRADE_DIRECTION),
+        )
+        for inst in instruments
+    }
+
+    for symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json in rows:
+        try:
+            payload = normalize_strategy_cache_payload(json.loads(result_json))
+        except json.JSONDecodeError:
+            continue
+
+        if payload is None or payload.get("error") or payload.get("results") is None:
+            continue
+
+        direction_mode = normalize_trade_direction(payload.get("direction_mode"))
+        combo_key = (max_levels, tp_atr, level_atr)
+        combo_rows.setdefault(combo_key, set()).add((symbol, exchange, direction_mode))
+
+        latest_at = combo_latest_at.get(combo_key)
+        if latest_at is None or computed_at > latest_at:
+            combo_latest_at[combo_key] = computed_at
+
+    options: list[dict] = []
+    if required_combo_rows:
+        for combo_key, available_rows in combo_rows.items():
+            if not required_combo_rows.issubset(available_rows):
+                continue
+
+            max_levels, tp_atr, level_atr = combo_key
+            computed_at = combo_latest_at[combo_key]
+            options.append(
+                {
+                    "value": _cache_selection_value(
+                        "all",
+                        "__ALL__",
+                        "",
+                        max_levels,
+                        tp_atr,
+                        level_atr,
+                    ),
+                    "scope": "all",
+                    "symbol": "__ALL__",
+                    "exchange": "",
+                    "max_levels": max_levels,
+                    "tp_atr": tp_atr,
+                    "level_atr": level_atr,
+                    "direction_mode": None,
+                    "direction_mode_label": "Selon chaque instrument",
+                    "computed_at": computed_at,
+                    "label": (
+                        "Tous les instruments"
+                        f" | Niveaux {max_levels} | TP {tp_atr:g} | Espacement {level_atr:g}"
+                    ),
+                }
+            )
+
+    options.sort(
+        key=lambda option: (
+            option["max_levels"],
+            option["tp_atr"],
+            option["level_atr"],
+        ),
+    )
+    return options
+
+
+def _resolve_cache_selection(instruments: list[dict], selected_value: str | None) -> tuple[list[dict], dict | None, dict | None]:
+    options = _build_cache_selection_options(instruments)
+    if not options:
+        return options, None, None
+
+    selected_option = next((option for option in options if option["value"] == selected_value), options[0])
+
+    payload = _load_all_instruments_from_cache(
+        instruments,
+        selected_option["max_levels"],
+        selected_option["tp_atr"],
+        selected_option["level_atr"],
+    )
+
+    return options, selected_option, payload
+
+
 def _save_cache(
     symbol: str, exchange: str, max_levels: int, tp_atr: float, level_atr: float, result: dict
 ) -> None:
@@ -1068,16 +1190,35 @@ async def _run_simulation_job(
 
 
 @router.get("/", response_class=HTMLResponse)
-async def strategy_index(request: Request):
+async def strategy_index(request: Request, selection: str | None = None):
     instruments = _get_instruments()
+    cache_options, selected_option, cached = _resolve_cache_selection(instruments, selection)
+
+    context = {
+        "request": request,
+        "instruments": instruments,
+        "cache_options": cache_options,
+        "selected_cache_option": selected_option["value"] if selected_option else None,
+        "selected_cache_option_label": selected_option["label"] if selected_option else None,
+        "results": None,
+        "all_results": None,
+        "error": None,
+        "job_id": None,
+    }
+
+    if not cache_options:
+        context["error"] = "Aucun résultat n'est disponible dans le cache."
+    elif cached is None:
+        context["error"] = "La combinaison sélectionnée n'est plus disponible dans le cache."
+    else:
+        cached = _enrich_all_results_with_mt5_swaps(cached)
+        if cached.get("selected_symbol") and cached.get("selected_symbol") != "__ALL__":
+            cached["selected_direction_mode_label"] = trade_direction_label(cached.get("direction_mode"))
+        context.update(cached)
+
     return templates.TemplateResponse(
         "strategy.html",
-        {
-            "request": request,
-            "instruments": instruments,
-            "results": None,
-            "error": None,
-        },
+        context,
     )
 
 
@@ -1117,62 +1258,70 @@ async def strategy_run(
     level_atr: float = Form(1.0),
     force: bool = Form(False),
 ):
-    if max_levels < 1:
-        max_levels = 1
-    if tp_atr <= 0:
-        tp_atr = 0.5
-    if level_atr <= 0:
-        level_atr = 1.0
-
     instruments = _get_instruments()
-    instrument = next(
-        (
-            item
-            for item in instruments
-            if item["symbol"] == symbol and item["exchange"] == exchange
-        ),
-        None,
-    )
-    direction_mode = (
-        instrument.get("preferred_direction", DEFAULT_TRADE_DIRECTION)
-        if instrument is not None
-        else DEFAULT_TRADE_DIRECTION
-    )
+    cache_options = _build_cache_selection_options(instruments)
+    if symbol == "__ALL__":
+        selected_cache_option = _cache_selection_value("all", "__ALL__", "", max_levels, tp_atr, level_atr)
+        cached = _load_all_instruments_from_cache(instruments, max_levels, tp_atr, level_atr)
+    else:
+        instrument = next(
+            (
+                item
+                for item in instruments
+                if item["symbol"] == symbol and item["exchange"] == exchange
+            ),
+            None,
+        )
+        direction_mode = (
+            instrument.get("preferred_direction", DEFAULT_TRADE_DIRECTION)
+            if instrument is not None
+            else DEFAULT_TRADE_DIRECTION
+        )
+        selected_cache_option = _cache_selection_value(
+            "instrument",
+            symbol,
+            exchange,
+            max_levels,
+            tp_atr,
+            level_atr,
+        )
+        cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr, direction_mode)
 
-    if not force:
-        if symbol == "__ALL__":
-            cached = _load_all_instruments_from_cache(instruments, max_levels, tp_atr, level_atr)
-        else:
-            cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr, direction_mode)
-        if cached is not None:
-            cached = _enrich_all_results_with_mt5_swaps(cached)
-            if symbol != "__ALL__":
-                cached["selected_direction_mode_label"] = trade_direction_label(cached.get("direction_mode"))
-            return templates.TemplateResponse(
-                "strategy.html",
-                {"request": request, "instruments": instruments, **cached},
-            )
-
-    job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"queue": asyncio.Queue(), "result": None}
-    asyncio.create_task(_run_simulation_job(job_id, symbol, exchange, max_levels, tp_atr, level_atr, instruments))
+    if cached is not None and not force:
+        cached = _enrich_all_results_with_mt5_swaps(cached)
+        if symbol != "__ALL__":
+            cached["selected_direction_mode_label"] = trade_direction_label(cached.get("direction_mode"))
+        return templates.TemplateResponse(
+            "strategy.html",
+            {
+                "request": request,
+                "instruments": instruments,
+                "cache_options": cache_options,
+                "selected_cache_option": selected_cache_option,
+                "selected_cache_option_label": next(
+                    (option["label"] for option in cache_options if option["value"] == selected_cache_option),
+                    None,
+                ),
+                "job_id": None,
+                **cached,
+            },
+        )
 
     return templates.TemplateResponse(
         "strategy.html",
         {
             "request": request,
             "instruments": instruments,
+            "cache_options": cache_options,
+            "selected_cache_option": selected_cache_option,
+            "selected_cache_option_label": next(
+                (option["label"] for option in cache_options if option["value"] == selected_cache_option),
+                None,
+            ),
             "results": None,
             "all_results": None,
-            "error": None,
-            "selected_symbol": symbol,
-            "selected_exchange": exchange,
-            "selected_direction_mode": direction_mode,
-            "selected_direction_mode_label": trade_direction_label(direction_mode),
-            "max_levels": max_levels,
-            "tp_atr": tp_atr,
-            "level_atr": level_atr,
-            "job_id": job_id,
+            "error": "Le calcul manuel est désactivé sur cette page. Sélectionnez une combinaison déjà présente dans le cache.",
+            "job_id": None,
         },
     )
 

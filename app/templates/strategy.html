@@ -4,7 +4,7 @@
 {% block title %}Stratégie Grid Averaging — Trading Analytics{% endblock %}
 
 {% block content %}
-<div class="p-6 max-w-5xl mx-auto space-y-8">
+<div class="p-6 max-w-[120rem] mx-auto space-y-8">
 
   <!-- Page header -->
   <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -22,81 +22,38 @@
 
   <!-- Configuration form -->
   <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
-    <h2 class="text-base font-semibold text-gray-200">Paramètres</h2>
+    <div class="flex flex-col gap-1">
+      <h2 class="text-base font-semibold text-gray-200">Résultats en cache</h2>
+      <p class="text-sm text-gray-400">
+        Cette page est désormais en lecture seule : elle affiche uniquement les résultats déjà présents dans le cache.
+      </p>
+    </div>
 
-    <form method="post" action="/strategy/run" class="flex flex-wrap gap-4 items-end">
-
-      <!-- Instrument selector -->
-      <div class="flex flex-col gap-1">
-        <label class="text-xs text-gray-400">Instrument (données 1min)</label>
-        {% if instruments %}
-        <select name="symbol" id="symbol-select"
+    {% if cache_options %}
+    <form method="get" action="/strategy" class="flex flex-col gap-3 md:flex-row md:items-end">
+      <div class="flex-1 flex flex-col gap-1">
+        <label for="cache-selection" class="text-xs text-gray-400">Combinaison disponible</label>
+        <select name="selection" id="cache-selection"
                 class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2
-                       focus:outline-none focus:ring-2 focus:ring-indigo-500 min-w-48"
-                onchange="document.getElementById('exchange-input').value = this.options[this.selectedIndex].dataset.exchange">
-          <option value="__ALL__" data-exchange=""
-                  {% if selected_symbol == '__ALL__' %}selected{% endif %}>
-            — Tous les instruments —
-          </option>
-          {% for inst in instruments %}
-          <option value="{{ inst.symbol }}"
-                  data-exchange="{{ inst.exchange }}"
-                  {% if selected_symbol == inst.symbol and selected_exchange == inst.exchange %}selected{% endif %}>
-            {{ inst.symbol }} — {{ inst.exchange }}{% if inst.type %} ({{ inst.type }}){% endif %}
-          </option>
+                       focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full">
+          {% for option in cache_options %}
+          <option value="{{ option.value }}" {% if selected_cache_option == option.value %}selected{% endif %}>{{ option.label }}</option>
           {% endfor %}
         </select>
-        <input type="hidden" name="exchange" id="exchange-input"
-               value="{% if selected_symbol == '__ALL__' %}{% elif selected_exchange %}{{ selected_exchange }}{% else %}{{ instruments[0].exchange if instruments else '' }}{% endif %}">
-         <p class="text-xs text-gray-500">Le sens simulé est piloté par la configuration de chaque instrument dans la page Données.</p>
-        {% else %}
-         <p class="text-sm text-amber-400">Aucun instrument avec données 1min importées.</p>
+        {% if selected_cache_option_label %}
+        <p class="text-xs text-gray-500">Sélection active : {{ selected_cache_option_label }}</p>
         {% endif %}
       </div>
-
-      <!-- Max levels -->
-      <div class="flex flex-col gap-1">
-        <label class="text-xs text-gray-400">Niveaux maximum</label>
-        <input type="number" name="max_levels" min="1" max="100"
-               value="{{ max_levels if max_levels else 10 }}"
-               class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2
-                      focus:outline-none focus:ring-2 focus:ring-indigo-500 w-28" />
-      </div>
-
-      <!-- TP ATR multiplier -->
-      <div class="flex flex-col gap-1">
-        <label class="text-xs text-gray-400">TP (× ATR50)</label>
-        <input type="number" name="tp_atr" min="0.01" max="100" step="0.01"
-               value="{{ tp_atr if tp_atr is defined and tp_atr is not none else 0.5 }}"
-               class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2
-                      focus:outline-none focus:ring-2 focus:ring-indigo-500 w-28" />
-      </div>
-
-      <!-- Level ATR multiplier -->
-      <div class="flex flex-col gap-1">
-        <label class="text-xs text-gray-400">Espacement niveaux (× ATR50)</label>
-        <input type="number" name="level_atr" min="0.01" max="100" step="0.01"
-               value="{{ level_atr if level_atr is defined and level_atr is not none else 1.0 }}"
-               class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2
-                      focus:outline-none focus:ring-2 focus:ring-indigo-500 w-28" />
-      </div>
-
-      <!-- Submit -->
-      {% if instruments %}
-      <div class="flex gap-2">
+      <div>
         <button type="submit"
-                class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
-          Lancer la simulation
-        </button>
-        <button type="submit" name="force" value="1"
-                class="bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm font-medium px-5 py-2 rounded-lg transition-colors border border-gray-600"
-                title="Ignorer le cache et recalculer">
-          ↺ Forcer le recalcul
+                class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors whitespace-nowrap">
+          Afficher
         </button>
       </div>
-      {% endif %}
-
     </form>
+    {% else %}
+    <p class="text-sm text-amber-400">Aucune combinaison n'est actuellement disponible dans le cache.</p>
+    {% endif %}
   </div>
 
   <!-- Error -->
@@ -107,22 +64,6 @@
   {% endif %}
 
   <div id="basket-feedback" class="hidden rounded-xl px-5 py-4 text-sm"></div>
-
-  <!-- Progress bar (shown while background job is running) -->
-  {% if job_id %}
-  <div id="progress-container" class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-3">
-    <div class="flex items-center justify-between">
-      <h2 class="text-base font-semibold text-gray-200">Calcul en cours…</h2>
-      <span id="progress-text" class="text-xs text-gray-500 font-mono">0 / ?</span>
-    </div>
-    <p id="progress-label" class="text-sm text-gray-400">Initialisation…</p>
-    <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
-      <div id="progress-bar"
-           class="bg-indigo-600 h-2 rounded-full transition-all duration-300 ease-out"
-           style="width: 0%"></div>
-    </div>
-  </div>
-  {% endif %}
 
   <!-- Results — all instruments -->
   {% if all_results %}
@@ -147,6 +88,7 @@
           </tr>
           <tr class="text-xs text-gray-600 border-b border-gray-700">
             <th class="px-4 py-2"></th>
+            <th class="text-center px-3 py-2 font-medium border-r border-gray-700">Détail</th>
             <th class="text-right px-3 py-2 font-medium">Réussite</th>
             <th class="text-right px-3 py-2 font-medium">Niv. moy.</th>
             <th class="text-right px-3 py-2 font-medium">Niv. max</th>
@@ -169,6 +111,19 @@
             <td class="px-4 py-3 text-gray-200 font-medium">
               {{ data.symbol }}
               <span class="text-gray-500 text-xs ml-1">{{ data.exchange }}</span>
+            </td>
+            <td class="px-3 py-3 text-center border-r border-gray-700">
+              <button type="button"
+                      class="js-open-symbol-detail inline-flex items-center justify-center rounded-lg border border-cyan-700 bg-cyan-900/20 px-3 py-1.5 text-xs font-medium text-cyan-200 transition-colors hover:bg-cyan-900/40"
+                      data-symbol="{{ data.symbol }}"
+                      data-exchange="{{ data.exchange }}"
+                      data-total-cycles="{{ data.total_cycles }}"
+                      data-direction-mode-label="{{ data.direction_mode_label }}"
+                      data-swap-long="{% if data.swap_long is not none %}{{ '%.4f'|format(data.swap_long) }}{% endif %}"
+                      data-swap-short="{% if data.swap_short is not none %}{{ '%.4f'|format(data.swap_short) }}{% endif %}"
+                      data-stats='{{ data.stats|tojson }}'>
+                Détail
+              </button>
             </td>
             {# LONG #}
             <td class="px-3 py-3 text-right font-mono
@@ -268,145 +223,6 @@
   </div>
   {% endif %}
 
-  <!-- Results — single instrument -->
-  {% if results %}
-  <div class="space-y-6">
-    <div class="flex items-center gap-3">
-      <h2 class="text-base font-semibold text-gray-200">Résultats — {{ selected_symbol }} ({{ selected_exchange }})</h2>
-      <span class="text-xs text-gray-500">{{ total_cycles }} cycles simulés · {{ selected_direction_mode_label if selected_direction_mode_label else 'Long + Short' }} · niveaux max = {{ max_levels }} · TP = {{ tp_atr }}× ATR50 · espacement = {{ level_atr }}× ATR50</span>
-      {% if from_cache is defined and from_cache %}
-      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
-        ⚡ Cache{% if cached_at is defined and cached_at %} — {{ cached_at.strftime('%d/%m/%Y %H:%M') }}{% endif %}
-      </span>
-      {% endif %}
-    </div>
-
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-      {% for direction, s in results.items() %}
-      <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
-
-        <!-- Direction header -->
-        <div class="flex items-center gap-2">
-          {% if direction == "LONG" %}
-          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-900/50 text-emerald-400 border border-emerald-700">
-            ▲ ACHAT
-          </span>
-          {% else %}
-          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-900/50 text-red-400 border border-red-700">
-            ▼ VENTE
-          </span>
-          {% endif %}
-          <span class="text-xs text-gray-500">{{ s.total }} cycles ({{ s.completed }} TP, {{ s.max_levels_closed }} max niveaux, {{ s.incomplete }} ouverts)</span>
-        </div>
-
-        <!-- Success rate -->
-        {% if s.success_rate is not none %}
-        <div class="flex items-center gap-3 pt-1">
-          <span class="text-2xl font-bold font-mono {% if s.success_rate >= 50 %}text-emerald-400{% else %}text-red-400{% endif %}">
-            {{ "%.2f"|format(s.success_rate) }}%
-          </span>
-          <span class="text-xs text-gray-500">de réussite sur cycles clôturés ({{ s.completed }} TP / {{ s.max_levels_closed }} max niveaux)</span>
-        </div>
-        {% endif %}
-
-        <!-- Stats table -->
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="text-xs text-gray-500 border-b border-gray-700">
-              <th class="text-left pb-2 font-medium">Métrique</th>
-              <th class="text-right pb-2 font-medium">Clôturés</th>
-              <th class="text-right pb-2 font-medium">Ouverts</th>
-              <th class="text-right pb-2 font-medium">Tous</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-800">
-            <tr>
-              <td class="py-2 text-gray-400">Niveaux moyens</td>
-              <td class="py-2 text-right text-white font-mono">
-                {% if s.avg_levels_complete is not none %}{{ "%.2f"|format(s.avg_levels_complete) }}{% else %}—{% endif %}
-              </td>
-              <td class="py-2 text-right text-white font-mono">
-                {% if s.avg_levels_incomplete is not none %}{{ "%.2f"|format(s.avg_levels_incomplete) }}{% else %}—{% endif %}
-              </td>
-              <td class="py-2 text-right text-indigo-300 font-mono font-semibold">
-                {% if s.avg_levels_all is not none %}{{ "%.2f"|format(s.avg_levels_all) }}{% else %}—{% endif %}
-              </td>
-            </tr>
-            <tr>
-              <td class="py-2 text-gray-400">Niveaux max atteints</td>
-              <td class="py-2 text-right text-white font-mono">
-                {% if s.peak_levels_complete is not none and s.level_reach %}
-                <button type="button"
-                        class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 text-white transition-colors hover:border-indigo-700 hover:bg-indigo-900/30 hover:text-indigo-200"
-                        data-popup-title="{{ selected_symbol }} · {% if direction == 'LONG' %}Achat{% else %}Vente{% endif %}"
-                        data-popup-subtitle="{{ selected_exchange }} · Colonne clôturés · détail par niveau calculé sur tous les cycles"
-                  data-total-cycles="{{ s.total }}"
-                        data-level-reach='{{ s.level_reach|tojson }}'>
-                  {{ s.peak_levels_complete }}
-                </button>
-                {% else %}—{% endif %}
-              </td>
-              <td class="py-2 text-right text-white font-mono">
-                {% if s.peak_levels_incomplete is not none and s.level_reach %}
-                <button type="button"
-                        class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 text-white transition-colors hover:border-indigo-700 hover:bg-indigo-900/30 hover:text-indigo-200"
-                        data-popup-title="{{ selected_symbol }} · {% if direction == 'LONG' %}Achat{% else %}Vente{% endif %}"
-                        data-popup-subtitle="{{ selected_exchange }} · Colonne ouverts · détail par niveau calculé sur tous les cycles"
-                  data-total-cycles="{{ s.total }}"
-                        data-level-reach='{{ s.level_reach|tojson }}'>
-                  {{ s.peak_levels_incomplete }}
-                </button>
-                {% else %}—{% endif %}
-              </td>
-              <td class="py-2 text-right text-indigo-300 font-mono font-semibold">
-                {% if s.peak_levels_all is not none and s.level_reach %}
-                <button type="button"
-                        class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 text-indigo-300 transition-colors hover:border-indigo-700 hover:bg-indigo-900/30 hover:text-indigo-200"
-                        data-popup-title="{{ selected_symbol }} · {% if direction == 'LONG' %}Achat{% else %}Vente{% endif %}"
-                        data-popup-subtitle="{{ selected_exchange }} · Tous les cycles · {{ s.total }} cycles"
-                  data-total-cycles="{{ s.total }}"
-                        data-level-reach='{{ s.level_reach|tojson }}'>
-                  {{ s.peak_levels_all }}
-                </button>
-                {% else %}—{% endif %}
-              </td>
-            </tr>
-            <tr>
-              <td class="py-2 text-gray-400">Durée moyenne</td>
-              <td class="py-2 text-right text-white font-mono">
-                {% if s.avg_duration_complete is not none %}{{ _fmt_duration(s.avg_duration_complete) }}{% else %}—{% endif %}
-              </td>
-              <td class="py-2 text-right text-white font-mono">
-                {% if s.avg_duration_incomplete is not none %}{{ _fmt_duration(s.avg_duration_incomplete) }}{% else %}—{% endif %}
-              </td>
-              <td class="py-2 text-right text-indigo-300 font-mono font-semibold">
-                {% if s.avg_duration_all is not none %}{{ _fmt_duration(s.avg_duration_all) }}{% else %}—{% endif %}
-              </td>
-            </tr>
-            <tr>
-              <td class="py-2 text-gray-400">Profit total (ATR)</td>
-              <td class="py-2 text-right font-mono font-semibold
-                {% if s.total_profit_atr is not none %}{% if s.total_profit_atr >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}{% else %}text-gray-500{% endif %}" colspan="3">
-                {% if s.total_profit_atr is not none %}{{ "%.1f"|format(s.total_profit_atr) }} ATR{% else %}—{% endif %}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-
-        {% if s.level_reach %}
-        <p class="text-xs text-gray-500">
-          Cliquez sur une valeur de “Niveaux max atteints” pour afficher le détail par niveau dans un popup.
-        </p>
-        {% endif %}
-
-      </div>
-      {% endfor %}
-
-    </div>
-  </div>
-  {% endif %}
-
   <div id="level-reach-modal"
        class="fixed inset-0 z-50 hidden"
        aria-hidden="true">
@@ -447,25 +263,46 @@
     </div>
   </div>
 
+  <div id="symbol-detail-modal"
+       class="fixed inset-0 z-50 hidden"
+       aria-hidden="true">
+    <div class="absolute inset-0 bg-gray-950/85 backdrop-blur-sm" data-close-symbol-detail="true"></div>
+    <div class="relative flex min-h-full items-center justify-center p-4">
+      <div class="w-full max-w-5xl overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl shadow-black/40">
+        <div class="flex items-start justify-between gap-4 border-b border-gray-700 px-5 py-4">
+          <div>
+            <h3 id="symbol-detail-title" class="text-lg font-semibold text-white">Détail instrument</h3>
+            <p id="symbol-detail-subtitle" class="mt-1 text-sm text-gray-400"></p>
+          </div>
+          <button type="button"
+                  id="symbol-detail-close"
+                  class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-700 text-gray-400 transition-colors hover:border-gray-500 hover:text-white"
+                  aria-label="Fermer le popup">
+            ✕
+          </button>
+        </div>
+
+        <div id="symbol-detail-body" class="max-h-[75vh] overflow-auto p-5"></div>
+      </div>
+    </div>
+  </div>
+
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  // Sync hidden exchange field when symbol changes
-  const sel = document.getElementById('symbol-select');
   const basketFeedback = document.getElementById('basket-feedback');
   const levelReachModal = document.getElementById('level-reach-modal');
   const levelReachTitle = document.getElementById('level-reach-title');
   const levelReachSubtitle = document.getElementById('level-reach-subtitle');
   const levelReachBody = document.getElementById('level-reach-body');
   const levelReachClose = document.getElementById('level-reach-close');
-  if (sel) {
-    sel.addEventListener('change', function() {
-      const opt = this.options[this.selectedIndex];
-      document.getElementById('exchange-input').value = opt.dataset.exchange;
-    });
-  }
+  const symbolDetailModal = document.getElementById('symbol-detail-modal');
+  const symbolDetailTitle = document.getElementById('symbol-detail-title');
+  const symbolDetailSubtitle = document.getElementById('symbol-detail-subtitle');
+  const symbolDetailBody = document.getElementById('symbol-detail-body');
+  const symbolDetailClose = document.getElementById('symbol-detail-close');
 
   function escapeHtml(value) {
     return String(value)
@@ -483,6 +320,181 @@
     levelReachModal.classList.add('hidden');
     levelReachModal.setAttribute('aria-hidden', 'true');
     document.body.classList.remove('overflow-hidden');
+  }
+
+  function closeSymbolDetailModal() {
+    if (!symbolDetailModal) {
+      return;
+    }
+    symbolDetailModal.classList.add('hidden');
+    symbolDetailModal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('overflow-hidden');
+  }
+
+  function formatNumber(value, digits = 2, suffix = '') {
+    if (value === null || value === undefined || value === '') {
+      return '—';
+    }
+    const num = Number(value);
+    if (Number.isNaN(num)) {
+      return '—';
+    }
+    return `${num.toFixed(digits)}${suffix}`;
+  }
+
+  function formatSignedAtr(value) {
+    if (value === null || value === undefined || value === '') {
+      return '—';
+    }
+    const num = Number(value);
+    if (Number.isNaN(num)) {
+      return '—';
+    }
+    return `${num.toFixed(1)} ATR`;
+  }
+
+  function formatDuration(value) {
+    if (value === null || value === undefined || value === '') {
+      return '—';
+    }
+    const totalMinutes = Number(value);
+    if (Number.isNaN(totalMinutes)) {
+      return '—';
+    }
+    const total = Math.max(0, Math.round(totalMinutes));
+    const days = Math.floor(total / 1440);
+    const hours = Math.floor((total % 1440) / 60);
+    const minutes = total % 60;
+    const parts = [];
+    if (days) {
+      parts.push(`${days}j`);
+    }
+    if (hours) {
+      parts.push(`${hours}h`);
+    }
+    if (minutes || !parts.length) {
+      parts.push(`${minutes}m`);
+    }
+    return parts.join(' ');
+  }
+
+  function metricCell(value, formatter, extraClass = '') {
+    return `<td class="py-2 text-right ${extraClass}">${formatter(value)}</td>`;
+  }
+
+  function levelReachButton(symbol, exchange, directionLabel, columnLabel, stats, className) {
+    if (!stats || stats.peak === null || stats.peak === undefined || !Array.isArray(stats.levelReach) || !stats.levelReach.length) {
+      return '<span class="text-white font-mono">—</span>';
+    }
+
+    return `
+      <button type="button"
+              class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 ${className} transition-colors hover:border-indigo-700 hover:bg-indigo-900/30 hover:text-indigo-200"
+              data-popup-title="${escapeHtml(symbol)} · ${escapeHtml(directionLabel)}"
+              data-popup-subtitle="${escapeHtml(exchange)} · ${escapeHtml(columnLabel)} · ${escapeHtml(stats.totalCycles)} cycles"
+              data-total-cycles="${escapeHtml(stats.totalCycles)}"
+              data-level-reach='${escapeHtml(JSON.stringify(stats.levelReach))}'>
+        ${escapeHtml(stats.peak)}
+      </button>`;
+  }
+
+  function renderDirectionCard(symbol, exchange, directionKey, stats, swapValue) {
+    const isLong = directionKey === 'LONG';
+    const directionLabel = isLong ? 'Achat' : 'Vente';
+    const badgeClasses = isLong
+      ? 'bg-emerald-900/50 text-emerald-400 border-emerald-700'
+      : 'bg-red-900/50 text-red-400 border-red-700';
+    const badgeIcon = isLong ? '▲ ACHAT' : '▼ VENTE';
+    const successRate = stats && stats.success_rate !== null && stats.success_rate !== undefined
+      ? Number(stats.success_rate)
+      : null;
+    const successClass = successRate !== null && successRate >= 50 ? 'text-emerald-400' : 'text-red-400';
+
+    return `
+      <div class="bg-gray-950/60 border border-gray-800 rounded-xl p-5 space-y-4">
+        <div class="flex items-center gap-2">
+          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${badgeClasses}">
+            ${badgeIcon}
+          </span>
+          <span class="text-xs text-gray-500">${escapeHtml(stats.total || 0)} cycles (${escapeHtml(stats.completed || 0)} TP, ${escapeHtml(stats.max_levels_closed || 0)} max niveaux, ${escapeHtml(stats.incomplete || 0)} ouverts)</span>
+        </div>
+        ${successRate === null ? '' : `
+          <div class="flex items-center gap-3 pt-1">
+            <span class="text-2xl font-bold font-mono ${successClass}">${successRate.toFixed(2)}%</span>
+            <span class="text-xs text-gray-500">de réussite sur cycles clôturés (${escapeHtml(stats.completed || 0)} TP / ${escapeHtml(stats.max_levels_closed || 0)} max niveaux)</span>
+          </div>`}
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-xs text-gray-500 border-b border-gray-700">
+              <th class="text-left pb-2 font-medium">Métrique</th>
+              <th class="text-right pb-2 font-medium">Clôturés</th>
+              <th class="text-right pb-2 font-medium">Ouverts</th>
+              <th class="text-right pb-2 font-medium">Tous</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-800">
+            <tr>
+              <td class="py-2 text-gray-400">Niveaux moyens</td>
+              ${metricCell(stats.avg_levels_complete, (value) => `<span class="text-white font-mono">${formatNumber(value, 2)}</span>`)}
+              ${metricCell(stats.avg_levels_incomplete, (value) => `<span class="text-white font-mono">${formatNumber(value, 2)}</span>`)}
+              ${metricCell(stats.avg_levels_all, (value) => `<span class="text-indigo-300 font-mono font-semibold">${formatNumber(value, 2)}</span>`)}
+            </tr>
+            <tr>
+              <td class="py-2 text-gray-400">Niveaux max atteints</td>
+              <td class="py-2 text-right">${levelReachButton(symbol, exchange, directionLabel, 'Colonne clôturés', { peak: stats.peak_levels_complete, levelReach: stats.level_reach, totalCycles: stats.total }, 'text-white')}</td>
+              <td class="py-2 text-right">${levelReachButton(symbol, exchange, directionLabel, 'Colonne ouverts', { peak: stats.peak_levels_incomplete, levelReach: stats.level_reach, totalCycles: stats.total }, 'text-white')}</td>
+              <td class="py-2 text-right">${levelReachButton(symbol, exchange, directionLabel, 'Tous les cycles', { peak: stats.peak_levels_all, levelReach: stats.level_reach, totalCycles: stats.total }, 'text-indigo-300')}</td>
+            </tr>
+            <tr>
+              <td class="py-2 text-gray-400">Durée moyenne</td>
+              ${metricCell(stats.avg_duration_complete, (value) => `<span class="text-white font-mono">${formatDuration(value)}</span>`)}
+              ${metricCell(stats.avg_duration_incomplete, (value) => `<span class="text-white font-mono">${formatDuration(value)}</span>`)}
+              ${metricCell(stats.avg_duration_all, (value) => `<span class="text-indigo-300 font-mono font-semibold">${formatDuration(value)}</span>`)}
+            </tr>
+            <tr>
+              <td class="py-2 text-gray-400">Profit total (ATR)</td>
+              <td class="py-2 text-right font-mono font-semibold ${stats.total_profit_atr !== null && stats.total_profit_atr !== undefined && Number(stats.total_profit_atr) >= 0 ? 'text-emerald-400' : 'text-red-400'}" colspan="3">${formatSignedAtr(stats.total_profit_atr)}</td>
+            </tr>
+            <tr>
+              <td class="py-2 text-gray-400">Swap / panier</td>
+              <td class="py-2 text-right text-cyan-200 font-mono font-semibold" colspan="3">${formatNumber(swapValue, 4)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  function openSymbolDetailModal(trigger) {
+    if (!symbolDetailModal || !symbolDetailTitle || !symbolDetailSubtitle || !symbolDetailBody || !trigger) {
+      return;
+    }
+
+    let stats = {};
+    try {
+      stats = JSON.parse(trigger.dataset.stats || '{}');
+    } catch (_error) {
+      stats = {};
+    }
+
+    const symbol = trigger.dataset.symbol || '';
+    const exchange = trigger.dataset.exchange || '';
+    const totalCycles = Number(trigger.dataset.totalCycles || 0);
+    const directionModeLabel = trigger.dataset.directionModeLabel || 'Selon chaque instrument';
+    const swapLong = trigger.dataset.swapLong;
+    const swapShort = trigger.dataset.swapShort;
+
+    symbolDetailTitle.textContent = `${symbol} (${exchange})`;
+    symbolDetailSubtitle.textContent = `${totalCycles} cycles simulés · ${directionModeLabel}`;
+    symbolDetailBody.innerHTML = `
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        ${renderDirectionCard(symbol, exchange, 'LONG', stats.LONG || {}, swapLong)}
+        ${renderDirectionCard(symbol, exchange, 'SHORT', stats.SHORT || {}, swapShort)}
+      </div>
+      <p class="mt-4 text-xs text-gray-500">Cliquez sur une valeur de “Niveaux max atteints” pour afficher le détail par niveau.</p>`;
+
+    symbolDetailModal.classList.remove('hidden');
+    symbolDetailModal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('overflow-hidden');
   }
 
   function openLevelReachModal(trigger) {
@@ -529,14 +541,24 @@
   if (levelReachClose) {
     levelReachClose.addEventListener('click', closeLevelReachModal);
   }
+  if (symbolDetailClose) {
+    symbolDetailClose.addEventListener('click', closeSymbolDetailModal);
+  }
 
   document.addEventListener('keydown', function(event) {
     if (event.key === 'Escape') {
       closeLevelReachModal();
+      closeSymbolDetailModal();
     }
   });
 
   document.addEventListener('click', function(event) {
+    const detailButton = event.target.closest('.js-open-symbol-detail');
+    if (detailButton) {
+      openSymbolDetailModal(detailButton);
+      return;
+    }
+
     const openButton = event.target.closest('.js-open-level-reach');
     if (openButton) {
       openLevelReachModal(openButton);
@@ -545,6 +567,11 @@
 
     if (event.target.closest('[data-close-level-reach="true"]')) {
       closeLevelReachModal();
+      return;
+    }
+
+    if (event.target.closest('[data-close-symbol-detail="true"]')) {
+      closeSymbolDetailModal();
     }
   });
 
@@ -590,40 +617,5 @@
       button.disabled = false;
     }
   });
-
-  // SSE progress tracking
-  {% if job_id %}
-  (function () {
-    const bar   = document.getElementById('progress-bar');
-    const label = document.getElementById('progress-label');
-    const text  = document.getElementById('progress-text');
-    const es    = new EventSource('/strategy/progress/{{ job_id }}');
-
-    es.onmessage = function (e) {
-      const evt = JSON.parse(e.data);
-      if (evt.type === 'progress') {
-        const pct = evt.total > 0 ? Math.round((evt.current / evt.total) * 100) : 0;
-        bar.style.width = pct + '%';
-        label.textContent = evt.label ? 'Simulation de ' + evt.label + '\u2026' : 'Calcul en cours\u2026';
-        text.textContent  = evt.current + ' / ' + evt.total;
-      } else if (evt.type === 'done') {
-        es.close();
-        bar.style.width = '100%';
-        label.textContent = 'Terminé — redirection\u2026';
-        window.location.href = evt.url;
-      } else if (evt.type === 'error') {
-        es.close();
-        label.textContent = 'Erreur : ' + (evt.message || 'inconnue');
-        bar.classList.replace('bg-indigo-600', 'bg-red-600');
-      }
-    };
-
-    es.onerror = function () {
-      es.close();
-      label.textContent = 'Connexion SSE perdue.';
-      bar.classList.replace('bg-indigo-600', 'bg-red-600');
-    };
-  })();
-  {% endif %}
 </script>
 {% endblock %}
