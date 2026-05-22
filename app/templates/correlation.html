@@ -77,6 +77,14 @@
               {% endif %}
             </select>
           </div>
+          <div class="flex flex-col gap-1 lg:w-40">
+            <label class="text-xs text-gray-400">Sens</label>
+            <select id="add-side-picker"
+                    class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="BUY">Buy</option>
+              <option value="SELL">Sell</option>
+            </select>
+          </div>
           <button type="button" id="add-instrument-button"
                   class="inline-flex items-center justify-center rounded-lg border border-indigo-700 bg-indigo-900/40 px-4 py-2 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-800/50">
             Ajouter au panier
@@ -94,7 +102,7 @@
             </thead>
             <tbody id="basket-items-body" class="divide-y divide-gray-800">
               {% for item in basket_items %}
-              <tr data-key="{{ item.symbol }}|{{ item.exchange }}">
+              <tr data-symbol="{{ item.symbol }}" data-exchange="{{ item.exchange }}" data-side="{{ item.side }}">
                 <td class="px-3 py-3 text-gray-200 font-medium">
                   {{ item.symbol }}
                   <span class="text-xs text-gray-500 ml-1">{{ item.exchange }}</span>
@@ -103,6 +111,7 @@
                 </td>
                 <td class="px-3 py-3">
                   <select name="item_side"
+                          data-previous-value="{{ item.side }}"
                           class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                     <option value="BUY" {% if item.side == 'BUY' %}selected{% endif %}>Buy</option>
                     <option value="SELL" {% if item.side == 'SELL' %}selected{% endif %}>Sell</option>
@@ -139,7 +148,7 @@
   <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
       <div>
-        <h2 class="text-base font-semibold text-gray-200">Top 5 des combinaisons les plus stables</h2>
+        <h2 class="text-base font-semibold text-gray-200">Top 3 par taille des combinaisons les plus stables</h2>
         <p id="progress-label" class="text-sm text-gray-400 mt-1">
           {% if job_id %}Initialisation du calcul…{% else %}Résultat final sur l'historique 1H commun.{% endif %}
         </p>
@@ -185,7 +194,7 @@
           {% endfor %}
           {% else %}
           <tr id="top-combinations-empty-row">
-            <td colspan="7" class="px-3 py-6 text-center text-sm text-gray-500">Le top 5 apparaîtra ici pendant le calcul.</td>
+            <td colspan="7" class="px-3 py-6 text-center text-sm text-gray-500">Le top 3 par taille apparaîtra ici pendant le calcul.</td>
           </tr>
           {% endif %}
         </tbody>
@@ -266,6 +275,7 @@
   const basketBody = document.getElementById('basket-items-body');
   const emptyBasketState = document.getElementById('empty-basket-state');
   const instrumentPicker = document.getElementById('instrument-picker');
+  const addSidePicker = document.getElementById('add-side-picker');
   const addInstrumentButton = document.getElementById('add-instrument-button');
   const basketFeedback = document.getElementById('basket-feedback');
 
@@ -288,7 +298,9 @@
 
   function makeBasketRow(item) {
     const row = document.createElement('tr');
-    row.dataset.key = item.symbol + '|' + item.exchange;
+    row.dataset.symbol = item.symbol;
+    row.dataset.exchange = item.exchange;
+    row.dataset.side = item.side;
     row.innerHTML = `
       <td class="px-3 py-3 text-gray-200 font-medium">
         ${item.symbol}
@@ -298,6 +310,7 @@
       </td>
       <td class="px-3 py-3">
         <select name="item_side"
+                data-previous-value="${item.side}"
                 class="bg-gray-800 border border-gray-600 text-gray-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           <option value="BUY" ${item.side === 'SELL' ? '' : 'selected'}>Buy</option>
           <option value="SELL" ${item.side === 'SELL' ? 'selected' : ''}>Sell</option>
@@ -359,7 +372,7 @@
         await postBasketUpdate('/correlation/basket/items', {
           symbol: selected.symbol,
           exchange: selected.exchange,
-          side: 'BUY'
+          side: addSidePicker ? addSidePicker.value : 'BUY'
         });
       } catch (error) {
         showBasketFeedback(error.message, true);
@@ -380,11 +393,11 @@
         return;
       }
 
-      const [symbol, exchange] = (row.dataset.key || '').split('|');
       try {
         await postBasketUpdate('/correlation/basket/items/remove', {
-          symbol,
-          exchange
+          symbol: row.dataset.symbol,
+          exchange: row.dataset.exchange,
+          side: row.dataset.side || 'BUY'
         });
       } catch (error) {
         showBasketFeedback(error.message, true);
@@ -402,14 +415,14 @@
         return;
       }
 
-      const [symbol, exchange] = (row.dataset.key || '').split('|');
-      const previousValue = sideSelect.dataset.previousValue || 'BUY';
+      const previousValue = sideSelect.dataset.previousValue || row.dataset.side || 'BUY';
 
       try {
         await postBasketUpdate('/correlation/basket/items', {
-          symbol,
-          exchange,
-          side: sideSelect.value
+          symbol: row.dataset.symbol,
+          exchange: row.dataset.exchange,
+          side: sideSelect.value,
+          previous_side: previousValue
         });
         sideSelect.dataset.previousValue = sideSelect.value;
       } catch (error) {
@@ -426,7 +439,7 @@
     }
 
     if (!rows || rows.length === 0) {
-      body.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-sm text-gray-500">Le top 5 apparaîtra ici pendant le calcul.</td></tr>';
+      body.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center text-sm text-gray-500">Le top 3 par taille apparaîtra ici pendant le calcul.</td></tr>';
       return;
     }
 

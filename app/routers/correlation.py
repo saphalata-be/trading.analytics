@@ -18,8 +18,8 @@ router = APIRouter(prefix="/correlation", tags=["correlation"])
 templates = Jinja2Templates(directory="app/templates")
 
 _jobs: dict[str, dict[str, Any]] = {}
-_LOT_SIZE = 100_000.0
-_TOP_LIMIT = 5
+_LOT_SIZE = 1000.0
+_TOP_RESULTS_PER_SIZE = 3
 _SINGLETON_BASKET_NAME = "Panier corrélation"
 
 
@@ -77,22 +77,48 @@ def _add_or_update_basket_item(
     symbol: str,
     exchange: str,
     side: str,
+    previous_side: str | None = None,
 ) -> tuple[list[dict[str, str]], str | None, str | None]:
     key = (symbol, exchange)
     if key not in available_lookup:
         return basket_items, None, f"{symbol} ({exchange}) n'est pas disponible en 1H pour la corrélation."
 
     normalized_side = _normalize_side(side)
+    normalized_previous_side = _normalize_side(previous_side) if previous_side is not None else None
     updated_items = [dict(item) for item in basket_items]
 
+    if normalized_previous_side is not None:
+        for item in updated_items:
+            if (
+                item["symbol"] == symbol
+                and item["exchange"] == exchange
+                and item["side"] == normalized_side
+            ):
+                return updated_items, None, (
+                    f"{symbol} est déjà présent en {_side_label(normalized_side).lower()} dans le panier."
+                )
+
+        for item in updated_items:
+            if (
+                item["symbol"] != symbol
+                or item["exchange"] != exchange
+                or item["side"] != normalized_previous_side
+            ):
+                continue
+            if normalized_previous_side == normalized_side:
+                return updated_items, f"{symbol} est déjà présent en {_side_label(normalized_side).lower()}.", None
+            item["side"] = normalized_side
+            return updated_items, f"{symbol} mis à jour en {_side_label(normalized_side).lower()} dans le panier.", None
+
+        return updated_items, None, f"{symbol} {_side_label(normalized_previous_side).lower()} est introuvable dans le panier."
+
     for item in updated_items:
-        if item["symbol"] != symbol or item["exchange"] != exchange:
-            continue
-        previous_side = item["side"]
-        item["side"] = normalized_side
-        if previous_side == normalized_side:
+        if (
+            item["symbol"] == symbol
+            and item["exchange"] == exchange
+            and item["side"] == normalized_side
+        ):
             return updated_items, f"{symbol} est déjà présent en {_side_label(normalized_side).lower()}.", None
-        return updated_items, f"{symbol} mis à jour en {_side_label(normalized_side).lower()} dans le panier.", None
 
     updated_items.append(
         {
@@ -190,27 +216,9 @@ def _save_singleton_basket(basket_items: list[dict[str, str]]) -> dict[str, Any]
             )
         else:
             basket_id = basket[0]
-            created_at = con.execute(
-                "SELECT created_at FROM correlation_baskets WHERE id = ?",
-                [basket_id],
-            ).fetchone()[0]
             con.execute(
                 "DELETE FROM correlation_basket_items WHERE basket_id = ?",
                 [basket_id],
-            )
-            con.execute(
-                """
-                DELETE FROM correlation_baskets
-                WHERE id = ?
-                """,
-                [basket_id],
-            )
-            con.execute(
-                """
-                INSERT INTO correlation_baskets (id, name, created_at, updated_at)
-                VALUES (?, ?, ?, current_timestamp)
-                """,
-                [basket_id, _SINGLETON_BASKET_NAME, created_at],
             )
 
         for index, item in enumerate(basket_items, start=1):
@@ -231,15 +239,21 @@ def _remove_basket_item(
     basket_items: list[dict[str, str]],
     symbol: str,
     exchange: str,
+    side: str,
 ) -> tuple[list[dict[str, str]], str]:
+    normalized_side = _normalize_side(side)
     updated_items = [
         dict(item)
         for item in basket_items
-        if item["symbol"] != symbol or item["exchange"] != exchange
+        if (
+            item["symbol"] != symbol
+            or item["exchange"] != exchange
+            or item["side"] != normalized_side
+        )
     ]
     if len(updated_items) == len(basket_items):
-        return updated_items, f"{symbol} n'était pas présent dans le panier."
-    return updated_items, f"{symbol} retiré du panier."
+        return updated_items, f"{symbol} {_side_label(normalized_side).lower()} n'était pas présent dans le panier."
+    return updated_items, f"{symbol} {_side_label(normalized_side).lower()} retiré du panier."
 
 
 def _find_usd_conversion(
@@ -444,6 +458,13 @@ def _count_combinations(item_count: int, min_size: int, max_size: int) -> int:
     return sum(math.comb(item_count, size) for size in range(min_size, max_size + 1))
 
 
+def _flatten_top_results(top_results_by_size: dict[int, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for size in sorted(top_results_by_size):
+        flattened.extend(top_results_by_size[size])
+    return flattened
+
+
 def _run_search(
     basket_name: str,
     basket_items: list[dict[str, str]],
@@ -476,7 +497,7 @@ def _run_search(
 
     dataset = _load_hourly_series(required_pairs)
     total_combinations = _count_combinations(len(basket_items), min_size, max_size)
-    top_results: list[dict[str, Any]] = []
+    top_results_by_size: dict[int, list[dict[str, Any]]] = {}
     valid_combinations = 0
     skipped_combinations = 0
     processed = 0
@@ -497,9 +518,12 @@ def _run_search(
                 skipped_combinations += 1
             else:
                 valid_combinations += 1
-                top_results.append(evaluated)
-                top_results.sort(key=_combo_sort_key)
-                top_results = top_results[:_TOP_LIMIT]
+                size_results = top_results_by_size.setdefault(size, [])
+                size_results.append(evaluated)
+                size_results.sort(key=_combo_sort_key)
+                top_results_by_size[size] = size_results[:_TOP_RESULTS_PER_SIZE]
+
+            top_results = _flatten_top_results(top_results_by_size)
 
             publish({
                 "type": "progress",
@@ -519,7 +543,7 @@ def _run_search(
             "skipped_combinations": skipped_combinations,
         }
 
-    best_result = top_results[0]
+    best_result = min(top_results, key=_combo_sort_key)
     return {
         "error": None,
         "basket_name": basket_name,
@@ -558,13 +582,13 @@ async def _run_search_job(
             basket_items,
             min_size,
             max_size,
+            available_instruments,
             publish,
         )
-        result["selected_basket_id"] = basket_id
         _jobs[job_id]["result"] = result
+    except Exception as exc:
         _jobs[job_id]["result"] = {
             "error": f"Erreur de calcul : {exc}",
-            "selected_basket_id": basket_id,
             "basket_name": basket_name,
             "basket_items": basket_items,
             "min_size": min_size,
@@ -633,6 +657,7 @@ async def correlation_basket_add_or_update_item(request: Request):
     symbol = str(form.get("symbol") or "").strip()
     exchange = str(form.get("exchange") or "").strip()
     side = str(form.get("side") or "BUY")
+    previous_side = form.get("previous_side")
 
     if not symbol or not exchange:
         return JSONResponse({"ok": False, "message": "Symbole ou marché manquant."}, status_code=400)
@@ -646,6 +671,7 @@ async def correlation_basket_add_or_update_item(request: Request):
         symbol,
         exchange,
         side,
+        str(previous_side) if previous_side is not None else None,
     )
 
     if error:
@@ -666,12 +692,13 @@ async def correlation_basket_remove_item(request: Request):
     form = await request.form()
     symbol = str(form.get("symbol") or "").strip()
     exchange = str(form.get("exchange") or "").strip()
+    side = str(form.get("side") or "BUY")
 
     if not symbol or not exchange:
         return JSONResponse({"ok": False, "message": "Symbole ou marché manquant."}, status_code=400)
 
     basket = _get_singleton_basket()
-    basket_items, notice = _remove_basket_item(basket["items"], symbol, exchange)
+    basket_items, notice = _remove_basket_item(basket["items"], symbol, exchange, side)
     saved_basket = _save_singleton_basket(basket_items)
     return JSONResponse(
         {
@@ -694,17 +721,19 @@ async def correlation_run(request: Request):
     sides = form.getlist("item_side")
 
     basket_items: list[dict[str, str]] = []
-    seen_pairs: set[tuple[str, str]] = set()
+    seen_items: set[tuple[str, str, str]] = set()
     for symbol, exchange, side in zip(symbols, exchanges, sides):
-        key = (str(symbol), str(exchange))
-        if key in seen_pairs or key not in available_lookup:
+        normalized_side = _normalize_side(str(side))
+        pair_key = (str(symbol), str(exchange))
+        item_key = (pair_key[0], pair_key[1], normalized_side)
+        if item_key in seen_items or pair_key not in available_lookup:
             continue
-        seen_pairs.add(key)
+        seen_items.add(item_key)
         basket_items.append(
             {
-                "symbol": key[0],
-                "exchange": key[1],
-                "side": _normalize_side(str(side)),
+                "symbol": pair_key[0],
+                "exchange": pair_key[1],
+                "side": normalized_side,
             }
         )
 

@@ -314,9 +314,33 @@ def init_db() -> None:
             exchange     VARCHAR NOT NULL,
             side         VARCHAR NOT NULL,
             position     INTEGER NOT NULL,
-            PRIMARY KEY (basket_id, symbol, exchange)
+            PRIMARY KEY (basket_id, symbol, exchange, side)
         )
     """)
+
+    correlation_basket_item_pk = [
+        row[1]
+        for row in con.execute("PRAGMA table_info('correlation_basket_items')").fetchall()
+        if row[5]
+    ]
+    if correlation_basket_item_pk == ["basket_id", "symbol", "exchange"]:
+        con.execute("""
+            CREATE TABLE correlation_basket_items__new (
+                basket_id    INTEGER NOT NULL REFERENCES correlation_baskets(id),
+                symbol       VARCHAR NOT NULL,
+                exchange     VARCHAR NOT NULL,
+                side         VARCHAR NOT NULL,
+                position     INTEGER NOT NULL,
+                PRIMARY KEY (basket_id, symbol, exchange, side)
+            )
+        """)
+        con.execute("""
+            INSERT INTO correlation_basket_items__new (basket_id, symbol, exchange, side, position)
+            SELECT basket_id, symbol, exchange, side, position
+            FROM correlation_basket_items
+        """)
+        con.execute("DROP TABLE correlation_basket_items")
+        con.execute("ALTER TABLE correlation_basket_items__new RENAME TO correlation_basket_items")
 
     watchlist_columns = {
         row[1]

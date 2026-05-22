@@ -411,17 +411,17 @@ def main() -> None:
         "--max-levels",
         nargs="+",
         type=int,
-        default=[10],
+        default=[6],
         metavar="N",
-        help="List of max_levels values to test (default: 10)",
+        help="List of max_levels values to test (default: 6)",
     )
     parser.add_argument(
         "--tp-atr",
         nargs="+",
         type=float,
-        default=[0.25, 0.5, 1.0],
+        default=[1.0, 1.5, 2.0],
         metavar="F",
-        help="List of tp_atr values to test (default: 0.25 0.5 1.0)",
+        help="List of tp_atr values to test (default: 1.0 1.5 2.0)",
     )
     parser.add_argument(
         "--level-atr",
