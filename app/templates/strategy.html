@@ -11,7 +11,7 @@
     <div>
       <h1 class="text-2xl font-bold text-white">Stratégie Grid Averaging</h1>
       <p class="text-gray-400 text-sm mt-1">
-        Simulation d'une stratégie en grille avec averaging. TP = 0.5 × ATR50. Nouveau niveau tous les 1 × ATR50 adverse. Cycles démarrés toutes les heures.
+        Simulation d'une stratégie en grille avec averaging, avec filtres d'entrée optionnels sur les cycles horaires.
       </p>
     </div>
     <a href="/strategy/dashboard"
@@ -70,7 +70,7 @@
   <div class="space-y-4">
     <div class="flex items-center gap-3">
       <h2 class="text-base font-semibold text-gray-200">Résultats — Tous les instruments</h2>
-      <span class="text-xs text-gray-500">{{ total_cycles }} cycles simulés · niveaux max = {{ max_levels }} · TP = {{ tp_atr }}× ATR50 · espacement = {{ level_atr }}× ATR50</span>
+      <span class="text-xs text-gray-500">{{ total_cycles }} cycles simulés · niveaux max = {{ max_levels }} · TP = {{ tp_atr }}× ATR50 · espacement = {{ level_atr }}× ATR50 · {{ entry_filter_label }}</span>
       {% if from_cache is defined and from_cache %}
       <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
         ⚡ Cache{% if cached_at is defined and cached_at %} — {{ cached_at.strftime('%d/%m/%Y %H:%M') }}{% endif %}

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from app.strategy_filters import (
+    DEFAULT_ENTRY_FILTER_ID,
+    entry_filter_label,
+    normalize_entry_filter,
+)
 from app.trade_direction import normalize_trade_direction
 
-STRATEGY_CACHE_VERSION = 5
+STRATEGY_CACHE_VERSION = 8
 SUPPORTED_STRATEGY_CACHE_VERSIONS = {STRATEGY_CACHE_VERSION}
 
 _PEAK_LEVEL_FIELDS = (
@@ -34,6 +39,15 @@ def normalize_strategy_cache_payload(payload: dict | None) -> dict | None:
     normalized = dict(payload)
     normalized["cache_version"] = STRATEGY_CACHE_VERSION
     normalized["direction_mode"] = normalize_trade_direction(payload.get("direction_mode"))
+    entry_filter = normalize_entry_filter(
+        payload.get("entry_filter_id", DEFAULT_ENTRY_FILTER_ID),
+        payload.get("initial_move_atr"),
+        payload.get("initial_retrace_atr"),
+    )
+    normalized["entry_filter_id"] = entry_filter.filter_id
+    normalized["initial_move_atr"] = entry_filter.initial_move_atr
+    normalized["initial_retrace_atr"] = entry_filter.initial_retrace_atr
+    normalized["entry_filter_label"] = entry_filter_label(entry_filter)
 
     results = normalized.get("results")
     if isinstance(results, dict):

@@ -98,6 +98,7 @@
         Max levels: {{ summary.max_levels_values | join(', ') }}
         · TP: {{ summary.tp_atr_values | join(', ') }}
         · Espacement: {{ summary.level_atr_values | join(', ') }}
+        · Filtres: {{ summary.entry_filter_values | join(', ') }}
         · Modes simulés: {{ summary.trade_direction_values | join(', ') }}
       </div>
     </div>
@@ -131,10 +132,11 @@
           </thead>
           <tbody class="divide-y divide-gray-800">
             {% for row in leaderboard %}
-            {% set is_focus = focus_combo and row.max_levels == focus_combo.max_levels and row.tp_atr == focus_combo.tp_atr and row.level_atr == focus_combo.level_atr and row.direction_mode == focus_combo.direction_mode %}
+            {% set is_focus = focus_combo and row.max_levels == focus_combo.max_levels and row.tp_atr == focus_combo.tp_atr and row.level_atr == focus_combo.level_atr and row.direction_mode == focus_combo.direction_mode and row.entry_filter_id == focus_combo.entry_filter_id and row.initial_move_atr == focus_combo.initial_move_atr and row.initial_retrace_atr == focus_combo.initial_retrace_atr %}
             <tr class="{% if is_focus %}bg-cyan-950/30{% else %}hover:bg-gray-800/40{% endif %}">
               <td class="px-4 py-3">
                 <div class="font-medium text-white">ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }}</div>
+                <div class="text-xs text-cyan-400">{{ row.entry_filter_label }}</div>
                 <div class="text-xs text-gray-500">MAJ {{ row.latest_computed_at.strftime('%d/%m/%Y %H:%M') }}</div>
               </td>
               <td class="px-4 py-3 text-sm text-gray-300">{{ row.direction_mode_label }}</td>
@@ -159,7 +161,7 @@
                 {% if row.avg_profit_per_instrument is not none %}{{ '%.2f'|format(row.avg_profit_per_instrument) }}{% else %}—{% endif %}
               </td>
               <td class="px-4 py-3 text-right">
-                <a href="/strategy/dashboard?direction={{ direction }}&metric={{ metric }}&focus_max_levels={{ row.max_levels }}&focus_tp_atr={{ row.tp_atr }}&focus_level_atr={{ row.level_atr }}&focus_trade_direction={{ row.direction_mode }}"
+                <a href="/strategy/dashboard?direction={{ direction }}&metric={{ metric }}&focus_max_levels={{ row.max_levels }}&focus_tp_atr={{ row.tp_atr }}&focus_level_atr={{ row.level_atr }}&focus_trade_direction={{ row.direction_mode }}&focus_entry_filter_id={{ row.entry_filter_id }}{% if row.initial_move_atr is not none %}&focus_initial_move_atr={{ row.initial_move_atr }}{% endif %}{% if row.initial_retrace_atr is not none %}&focus_initial_retrace_atr={{ row.initial_retrace_atr }}{% endif %}"
                    class="inline-flex items-center rounded-lg border border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-200 transition-colors hover:border-cyan-500 hover:text-cyan-300">
                   Voir
                 </a>
@@ -178,6 +180,7 @@
       <div class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
         <div class="text-xs uppercase tracking-[0.2em] text-gray-500">Zoom paramètres</div>
         <h2 class="mt-3 text-xl font-semibold text-white">ML {{ focus_combo.max_levels }} · TP {{ focus_combo.tp_atr }} · LA {{ focus_combo.level_atr }}</h2>
+        <div class="mt-2 text-sm text-cyan-300">{{ focus_combo.entry_filter_label }}</div>
         <div class="mt-2 text-sm text-cyan-300">Mode simulé: {{ focus_combo.direction_mode_label }}</div>
         <p class="mt-2 text-sm text-gray-400">
           Cette combinaison est affichée parce qu'elle ressort le mieux selon <span class="font-medium text-white">{{ metric_label }}</span>
@@ -261,7 +264,7 @@
                   <button type="button"
                           class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 text-white transition-colors hover:border-cyan-700 hover:bg-cyan-900/20 hover:text-cyan-200"
                           data-popup-title="{{ row.symbol }} · {{ direction_label }}"
-                          data-popup-subtitle="{{ row.exchange }} · Combinaison ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }} · {{ row.direction_cycles }} cycles"
+                          data-popup-subtitle="{{ row.exchange }} · Combinaison ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }} · {{ row.entry_filter_label }} · {{ row.direction_cycles }} cycles"
                           data-total-cycles="{{ row.direction_cycles }}"
                           data-level-reach='{{ s.level_reach|tojson }}'>
                     {{ s.peak_levels_all }}
@@ -316,6 +319,7 @@
               </td>
               <td class="px-4 py-3 text-white">
                 <div>ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }}</div>
+                <div class="text-xs text-cyan-400">{{ row.entry_filter_label }}</div>
                 <div class="mt-1 text-xs text-cyan-300">{{ row.direction_mode_label }}</div>
               </td>
               <td class="px-4 py-3 text-right font-mono text-white">{{ row.direction_cycles }}</td>
@@ -327,7 +331,7 @@
                 <button type="button"
                         class="js-open-level-reach inline-flex items-center justify-end rounded-md border border-transparent px-2 py-1 text-white transition-colors hover:border-cyan-700 hover:bg-cyan-900/20 hover:text-cyan-200"
                         data-popup-title="{{ row.symbol }} · {{ direction_label }}"
-                        data-popup-subtitle="{{ row.exchange }} · Meilleure combinaison ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }} · {{ row.direction_cycles }} cycles"
+                        data-popup-subtitle="{{ row.exchange }} · Meilleure combinaison ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }} · {{ row.entry_filter_label }} · {{ row.direction_cycles }} cycles"
                         data-total-cycles="{{ row.direction_cycles }}"
                         data-level-reach='{{ s.level_reach|tojson }}'>
                   {{ s.peak_levels_all }}
@@ -341,7 +345,7 @@
                 {% if s.total_profit_atr is not none %}{{ '%.1f'|format(s.total_profit_atr) }}{% else %}—{% endif %}
               </td>
               <td class="px-4 py-3 text-right">
-                <a href="/strategy/dashboard?direction={{ direction }}&metric={{ metric }}&focus_max_levels={{ row.max_levels }}&focus_tp_atr={{ row.tp_atr }}&focus_level_atr={{ row.level_atr }}&focus_trade_direction={{ row.direction_mode }}"
+                <a href="/strategy/dashboard?direction={{ direction }}&metric={{ metric }}&focus_max_levels={{ row.max_levels }}&focus_tp_atr={{ row.tp_atr }}&focus_level_atr={{ row.level_atr }}&focus_trade_direction={{ row.direction_mode }}&focus_entry_filter_id={{ row.entry_filter_id }}{% if row.initial_move_atr is not none %}&focus_initial_move_atr={{ row.initial_move_atr }}{% endif %}{% if row.initial_retrace_atr is not none %}&focus_initial_retrace_atr={{ row.initial_retrace_atr }}{% endif %}"
                    class="inline-flex items-center rounded-lg border border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-200 transition-colors hover:border-cyan-500 hover:text-cyan-300">
                   Analyser
                 </a>

@@ -19,8 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import uuid
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -29,6 +27,18 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.database import get_connection, get_cache_connection
+from app.strategy_filters import (
+    EntryFilterConfig,
+    DEFAULT_ENTRY_FILTER_ID,
+    DEFAULT_INITIAL_MOVE_ATR,
+    DEFAULT_INITIAL_RETRACE_ATR,
+    entry_filter_cache_parts,
+    entry_filter_label,
+    entry_filter_payload,
+    find_entry_for_arrays,
+    find_sequential_entries_for_arrays,
+    normalize_entry_filter,
+)
 from app.strategy_cache import STRATEGY_CACHE_VERSION, normalize_strategy_cache_payload
 from app.strategy_stats import aggregate_cycles
 from app.trade_direction import (
@@ -109,8 +119,10 @@ def _simulate_cycles(
     level_atr: float,
     con,
     direction_mode: str = DEFAULT_TRADE_DIRECTION,
+    entry_filter_config: EntryFilterConfig | None = None,
 ) -> list[dict]:
     """Run the full simulation and return a list of cycle result dicts."""
+    entry_filter_config = entry_filter_config or normalize_entry_filter()
     # Fetch all 1min bars ordered chronologically
     bars = con.execute(
         """
@@ -125,6 +137,10 @@ def _simulate_cycles(
     if not bars:
         return []
 
+    bars_open = [bar[1] for bar in bars]
+    bars_high = [bar[2] for bar in bars]
+    bars_low = [bar[3] for bar in bars]
+
     # Identify all full-hour bar indices
     hourly_indices: list[int] = [
         i for i, b in enumerate(bars) if b[0].minute == 0
@@ -135,10 +151,52 @@ def _simulate_cycles(
 
     results: list[dict] = []
 
+    if entry_filter_config.filter_id != DEFAULT_ENTRY_FILTER_ID:
+        atr50_by_idx: dict[int, float] = {}
+        for idx, bar in enumerate(bars):
+            bar_dt: datetime = bar[0]
+            date_key = bar_dt.date().isoformat()
+            if date_key not in atr_cache:
+                atr_cache[date_key] = _compute_atr50(con, symbol, exchange, bar_dt)
+            atr50 = atr_cache[date_key]
+            if atr50 is not None and atr50 > 0:
+                atr50_by_idx[idx] = atr50
+
+        for direction in expand_trade_directions(direction_mode):
+            for entry_idx, entry_price in find_sequential_entries_for_arrays(
+                bars_open,
+                bars_high,
+                bars_low,
+                atr50_by_idx,
+                direction,
+                entry_filter_config,
+            ):
+                atr50 = atr50_by_idx.get(entry_idx)
+                if atr50 is None or atr50 <= 0:
+                    continue
+                cycle = _run_cycle(
+                    bars=bars,
+                    start_idx=entry_idx,
+                    start_price=entry_price,
+                    direction=direction,
+                    atr50=atr50,
+                    max_levels=max_levels,
+                    tp_atr=tp_atr,
+                    level_atr=level_atr,
+                )
+                cycle["symbol"] = symbol
+                cycle["exchange"] = exchange
+                cycle["start_dt"] = bars[entry_idx][0]
+                cycle["signal_dt"] = bars[entry_idx][0]
+                cycle["atr50"] = atr50
+                cycle["direction"] = direction
+                results.append(cycle)
+
+        return results
+
     for start_idx in hourly_indices:
         start_bar = bars[start_idx]
         start_dt: datetime = start_bar[0]
-        start_price: float = start_bar[1]  # open of the start bar
 
         # ATR50 from daily data before start_dt
         date_key = start_dt.date().isoformat()
@@ -150,10 +208,22 @@ def _simulate_cycles(
 
         # Simulate LONG and SHORT cycles from this start point
         for direction in expand_trade_directions(direction_mode):
+            entry = find_entry_for_arrays(
+                bars_open,
+                bars_high,
+                bars_low,
+                start_idx,
+                atr50,
+                direction,
+                entry_filter_config,
+            )
+            if entry is None:
+                continue
+            entry_idx, entry_price = entry
             cycle = _run_cycle(
                 bars=bars,
-                start_idx=start_idx,
-                start_price=start_price,
+                start_idx=entry_idx,
+                start_price=entry_price,
                 direction=direction,
                 atr50=atr50,
                 max_levels=max_levels,
@@ -162,7 +232,8 @@ def _simulate_cycles(
             )
             cycle["symbol"] = symbol
             cycle["exchange"] = exchange
-            cycle["start_dt"] = start_dt
+            cycle["start_dt"] = bars[entry_idx][0]
+            cycle["signal_dt"] = start_dt
             cycle["atr50"] = atr50
             cycle["direction"] = direction
             results.append(cycle)
@@ -279,6 +350,12 @@ def _weighted_average(values: list[tuple[Optional[float], int]]) -> Optional[flo
     if total_weight == 0:
         return None
     return weighted_sum / total_weight
+
+
+def _optional_float_matches(candidate: float | None, expected: float | None) -> bool:
+    if candidate is None or expected is None:
+        return candidate is None and expected is None
+    return math.isclose(candidate, expected, rel_tol=1e-9, abs_tol=1e-9)
 
 
 def _compute_historical_position_pct(
@@ -465,6 +542,9 @@ def _dashboard_combo_matches(
     focus_tp_atr: float | None,
     focus_level_atr: float | None,
     focus_trade_direction: str | None,
+    focus_entry_filter_id: int | None,
+    focus_initial_move_atr: float | None,
+    focus_initial_retrace_atr: float | None,
 ) -> bool:
     if focus_max_levels is not None and row["max_levels"] != focus_max_levels:
         return False
@@ -473,6 +553,18 @@ def _dashboard_combo_matches(
     if focus_level_atr is not None and not math.isclose(row["level_atr"], focus_level_atr, rel_tol=1e-9, abs_tol=1e-9):
         return False
     if focus_trade_direction is not None and row["direction_mode"] != focus_trade_direction:
+        return False
+    if focus_entry_filter_id is not None and row["entry_filter_id"] != focus_entry_filter_id:
+        return False
+    if focus_initial_move_atr is not None and not _optional_float_matches(
+        row["initial_move_atr"],
+        focus_initial_move_atr,
+    ):
+        return False
+    if focus_initial_retrace_atr is not None and not _optional_float_matches(
+        row["initial_retrace_atr"],
+        focus_initial_retrace_atr,
+    ):
         return False
     return True
 
@@ -484,6 +576,9 @@ def _build_strategy_dashboard(
     focus_tp_atr: float | None,
     focus_level_atr: float | None,
     focus_trade_direction: str | None,
+    focus_entry_filter_id: int | None,
+    focus_initial_move_atr: float | None,
+    focus_initial_retrace_atr: float | None,
 ) -> dict:
     metric_spec = _dashboard_metric_spec(metric)
     direction = direction if direction in {"BOTH", "LONG", "SHORT"} else "BOTH"
@@ -492,7 +587,17 @@ def _build_strategy_dashboard(
     try:
         rows = con.execute(
             """
-            SELECT symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json
+            SELECT
+                symbol,
+                exchange,
+                max_levels,
+                tp_atr,
+                level_atr,
+                entry_filter_id,
+                initial_move_atr,
+                initial_retrace_atr,
+                computed_at,
+                result_json
             FROM strategy_cache
             ORDER BY computed_at DESC
             """
@@ -502,13 +607,25 @@ def _build_strategy_dashboard(
 
     entries: list[dict] = []
     instruments_seen: set[tuple[str, str]] = set()
-    combo_seen: set[tuple[int, float, float, str]] = set()
+    combo_seen: set[tuple[int, float, float, str, int, float | None, float | None]] = set()
     max_levels_values: set[int] = set()
     tp_atr_values: set[float] = set()
     level_atr_values: set[float] = set()
+    entry_filter_values: set[str] = set()
     latest_computed_at = None
 
-    for symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json in rows:
+    for (
+        symbol,
+        exchange,
+        max_levels,
+        tp_atr,
+        level_atr,
+        entry_filter_id,
+        initial_move_atr,
+        initial_retrace_atr,
+        computed_at,
+        result_json,
+    ) in rows:
         try:
             payload = normalize_strategy_cache_payload(json.loads(result_json))
         except json.JSONDecodeError:
@@ -520,6 +637,11 @@ def _build_strategy_dashboard(
             continue
 
         direction_mode = normalize_trade_direction(payload.get("direction_mode"))
+        entry_filter_config = normalize_entry_filter(
+            payload.get("entry_filter_id", entry_filter_id),
+            payload.get("initial_move_atr", initial_move_atr),
+            payload.get("initial_retrace_atr", initial_retrace_atr),
+        )
         stats = _merge_direction_stats(payload["results"], direction)
         if not stats or (stats.get("total") or 0) == 0:
             continue
@@ -532,9 +654,17 @@ def _build_strategy_dashboard(
             "max_levels": max_levels,
             "tp_atr": tp_atr,
             "level_atr": level_atr,
+            "entry_filter_id": entry_filter_config.filter_id,
+            "initial_move_atr": entry_filter_config.initial_move_atr,
+            "initial_retrace_atr": entry_filter_config.initial_retrace_atr,
+            "entry_filter_label": entry_filter_label(entry_filter_config),
             "direction_mode": direction_mode,
             "direction_mode_label": trade_direction_label(direction_mode),
-            "combo_key": f"{max_levels}|{tp_atr}|{level_atr}|{direction_mode}",
+            "combo_key": (
+                f"{max_levels}|{tp_atr}|{level_atr}|{direction_mode}|"
+                f"{entry_filter_config.filter_id}|"
+                f"{entry_filter_config.initial_move_atr}|{entry_filter_config.initial_retrace_atr}"
+            ),
             "computed_at": computed_at,
             "direction_cycles": stats.get("total") or 0,
             "overall_cycles": payload.get("total_cycles") or 0,
@@ -545,20 +675,32 @@ def _build_strategy_dashboard(
         entries.append(entry)
 
         instruments_seen.add((symbol, exchange))
-        combo_seen.add((max_levels, tp_atr, level_atr, direction_mode))
+        combo_seen.add((
+            max_levels,
+            tp_atr,
+            level_atr,
+            direction_mode,
+            entry_filter_config.filter_id,
+            entry_filter_config.initial_move_atr,
+            entry_filter_config.initial_retrace_atr,
+        ))
         max_levels_values.add(max_levels)
         tp_atr_values.add(tp_atr)
         level_atr_values.add(level_atr)
+        entry_filter_values.add(entry_filter_label(entry_filter_config))
         if latest_computed_at is None or computed_at > latest_computed_at:
             latest_computed_at = computed_at
 
-    combo_map: dict[tuple[int, float, float, str], dict] = {}
+    combo_map: dict[tuple[int, float, float, str, int, float | None, float | None], dict] = {}
     for entry in entries:
         key = (
             entry["max_levels"],
             entry["tp_atr"],
             entry["level_atr"],
             entry["direction_mode"],
+            entry["entry_filter_id"],
+            entry["initial_move_atr"],
+            entry["initial_retrace_atr"],
         )
         stats = entry["stats"]
         combo = combo_map.setdefault(
@@ -567,6 +709,10 @@ def _build_strategy_dashboard(
                 "max_levels": entry["max_levels"],
                 "tp_atr": entry["tp_atr"],
                 "level_atr": entry["level_atr"],
+                "entry_filter_id": entry["entry_filter_id"],
+                "initial_move_atr": entry["initial_move_atr"],
+                "initial_retrace_atr": entry["initial_retrace_atr"],
+                "entry_filter_label": entry["entry_filter_label"],
                 "direction_mode": entry["direction_mode"],
                 "direction_mode_label": entry["direction_mode_label"],
                 "instruments_count": 0,
@@ -660,6 +806,9 @@ def _build_strategy_dashboard(
                 focus_tp_atr,
                 focus_level_atr,
                 normalized_focus_trade_direction,
+                focus_entry_filter_id,
+                focus_initial_move_atr,
+                focus_initial_retrace_atr,
             ):
                 focus_combo = row
                 break
@@ -675,6 +824,9 @@ def _build_strategy_dashboard(
             and math.isclose(entry["tp_atr"], focus_combo["tp_atr"], rel_tol=1e-9, abs_tol=1e-9)
             and math.isclose(entry["level_atr"], focus_combo["level_atr"], rel_tol=1e-9, abs_tol=1e-9)
             and entry["direction_mode"] == focus_combo["direction_mode"]
+            and entry["entry_filter_id"] == focus_combo["entry_filter_id"]
+            and _optional_float_matches(entry["initial_move_atr"], focus_combo["initial_move_atr"])
+            and _optional_float_matches(entry["initial_retrace_atr"], focus_combo["initial_retrace_atr"])
         ]
         focus_instruments = _dashboard_sort_rows(
             focus_instruments,
@@ -714,6 +866,7 @@ def _build_strategy_dashboard(
             "max_levels_values": sorted(max_levels_values),
             "tp_atr_values": sorted(tp_atr_values),
             "level_atr_values": sorted(level_atr_values),
+            "entry_filter_values": sorted(entry_filter_values),
             "trade_direction_values": [
                 trade_direction_label(value)
                 for value in sorted({entry["direction_mode"] for entry in entries})
@@ -738,16 +891,35 @@ def _load_cache(
     tp_atr: float,
     level_atr: float,
     direction_mode: str,
+    entry_filter_config: EntryFilterConfig | None = None,
 ) -> dict | None:
     """Return cached result dict (with from_cache/cached_at keys) or None."""
+    entry_filter_config = entry_filter_config or normalize_entry_filter()
+    entry_filter_id, initial_move_atr, initial_retrace_atr = entry_filter_cache_parts(entry_filter_config)
     con = get_cache_connection()
     try:
         row = con.execute(
             """
             SELECT result_json, computed_at FROM strategy_cache
-            WHERE symbol=? AND exchange=? AND max_levels=? AND tp_atr=? AND level_atr=?
+            WHERE symbol=?
+              AND exchange=?
+              AND max_levels=?
+              AND tp_atr=?
+              AND level_atr=?
+              AND entry_filter_id=?
+              AND initial_move_atr=?
+              AND initial_retrace_atr=?
             """,
-            [symbol, exchange, max_levels, tp_atr, level_atr],
+            [
+                symbol,
+                exchange,
+                max_levels,
+                tp_atr,
+                level_atr,
+                entry_filter_id,
+                initial_move_atr,
+                initial_retrace_atr,
+            ],
         ).fetchone()
     finally:
         con.close()
@@ -757,6 +929,12 @@ def _load_cache(
     if result is None:
         return None
     if result.get("direction_mode") != normalize_trade_direction(direction_mode):
+        return None
+    if result.get("entry_filter_id") != entry_filter_config.filter_id:
+        return None
+    if not _optional_float_matches(result.get("initial_move_atr"), entry_filter_config.initial_move_atr):
+        return None
+    if not _optional_float_matches(result.get("initial_retrace_atr"), entry_filter_config.initial_retrace_atr):
         return None
     result["from_cache"] = True
     result["cached_at"] = row[1]
@@ -864,8 +1042,10 @@ def _load_all_instruments_from_cache(
     max_levels: int,
     tp_atr: float,
     level_atr: float,
+    entry_filter_config: EntryFilterConfig | None = None,
 ) -> dict | None:
     """Rebuild the aggregate view directly from per-instrument cache entries."""
+    entry_filter_config = entry_filter_config or normalize_entry_filter()
     all_results: dict[str, dict] = {}
     total_cycles = 0
     latest_cached_at = None
@@ -879,6 +1059,7 @@ def _load_all_instruments_from_cache(
             tp_atr,
             level_atr,
             direction_mode,
+            entry_filter_config,
         )
         if cached is None or cached.get("error") or cached.get("results") is None:
             return None
@@ -906,6 +1087,7 @@ def _load_all_instruments_from_cache(
         "max_levels": max_levels,
         "tp_atr": tp_atr,
         "level_atr": level_atr,
+        **entry_filter_payload(entry_filter_config),
         "total_cycles": total_cycles,
         "from_cache": True,
         "cached_at": latest_cached_at,
@@ -919,7 +1101,9 @@ def _cache_selection_value(
     max_levels: int,
     tp_atr: float,
     level_atr: float,
+    entry_filter_config: EntryFilterConfig | None = None,
 ) -> str:
+    entry_filter_config = entry_filter_config or normalize_entry_filter()
     return "|".join(
         [
             scope,
@@ -928,6 +1112,17 @@ def _cache_selection_value(
             str(max_levels),
             f"{tp_atr:.12g}",
             f"{level_atr:.12g}",
+            str(entry_filter_config.filter_id),
+            (
+                ""
+                if entry_filter_config.initial_move_atr is None
+                else f"{entry_filter_config.initial_move_atr:.12g}"
+            ),
+            (
+                ""
+                if entry_filter_config.initial_retrace_atr is None
+                else f"{entry_filter_config.initial_retrace_atr:.12g}"
+            ),
         ]
     )
 
@@ -937,7 +1132,17 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
     try:
         rows = con.execute(
             """
-            SELECT symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json
+            SELECT
+                symbol,
+                exchange,
+                max_levels,
+                tp_atr,
+                level_atr,
+                entry_filter_id,
+                initial_move_atr,
+                initial_retrace_atr,
+                computed_at,
+                result_json
             FROM strategy_cache
             ORDER BY computed_at DESC, symbol ASC, exchange ASC
             """
@@ -945,8 +1150,9 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
     finally:
         con.close()
 
-    combo_rows: dict[tuple[int, float, float], set[tuple[str, str, str]]] = {}
-    combo_latest_at: dict[tuple[int, float, float], datetime] = {}
+    combo_rows: dict[tuple[int, float, float, int, float | None, float | None], set[tuple[str, str, str]]] = {}
+    combo_latest_at: dict[tuple[int, float, float, int, float | None, float | None], datetime] = {}
+    combo_filters: dict[tuple[int, float, float, int, float | None, float | None], EntryFilterConfig] = {}
     required_combo_rows = {
         (
             inst["symbol"],
@@ -956,7 +1162,18 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
         for inst in instruments
     }
 
-    for symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json in rows:
+    for (
+        symbol,
+        exchange,
+        max_levels,
+        tp_atr,
+        level_atr,
+        entry_filter_id,
+        initial_move_atr,
+        initial_retrace_atr,
+        computed_at,
+        result_json,
+    ) in rows:
         try:
             payload = normalize_strategy_cache_payload(json.loads(result_json))
         except json.JSONDecodeError:
@@ -966,8 +1183,21 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
             continue
 
         direction_mode = normalize_trade_direction(payload.get("direction_mode"))
-        combo_key = (max_levels, tp_atr, level_atr)
+        entry_filter_config = normalize_entry_filter(
+            payload.get("entry_filter_id", entry_filter_id),
+            payload.get("initial_move_atr", initial_move_atr),
+            payload.get("initial_retrace_atr", initial_retrace_atr),
+        )
+        combo_key = (
+            max_levels,
+            tp_atr,
+            level_atr,
+            entry_filter_config.filter_id,
+            entry_filter_config.initial_move_atr,
+            entry_filter_config.initial_retrace_atr,
+        )
         combo_rows.setdefault(combo_key, set()).add((symbol, exchange, direction_mode))
+        combo_filters[combo_key] = entry_filter_config
 
         latest_at = combo_latest_at.get(combo_key)
         if latest_at is None or computed_at > latest_at:
@@ -979,7 +1209,8 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
             if not required_combo_rows.issubset(available_rows):
                 continue
 
-            max_levels, tp_atr, level_atr = combo_key
+            max_levels, tp_atr, level_atr, *_ = combo_key
+            entry_filter_config = combo_filters[combo_key]
             computed_at = combo_latest_at[combo_key]
             options.append(
                 {
@@ -990,6 +1221,7 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
                         max_levels,
                         tp_atr,
                         level_atr,
+                        entry_filter_config,
                     ),
                     "scope": "all",
                     "symbol": "__ALL__",
@@ -997,12 +1229,14 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
                     "max_levels": max_levels,
                     "tp_atr": tp_atr,
                     "level_atr": level_atr,
+                    **entry_filter_payload(entry_filter_config),
                     "direction_mode": None,
                     "direction_mode_label": "Selon chaque instrument",
                     "computed_at": computed_at,
                     "label": (
                         "Tous les instruments"
                         f" | Niveaux {max_levels} | TP {tp_atr:g} | Espacement {level_atr:g}"
+                        f" | {entry_filter_label(entry_filter_config)}"
                     ),
                 }
             )
@@ -1012,6 +1246,9 @@ def _build_cache_selection_options(instruments: list[dict]) -> list[dict]:
             option["max_levels"],
             option["tp_atr"],
             option["level_atr"],
+            option["entry_filter_id"],
+            option["initial_move_atr"] or 0.0,
+            option["initial_retrace_atr"] or 0.0,
         ),
     )
     return options
@@ -1029,35 +1266,88 @@ def _resolve_cache_selection(instruments: list[dict], selected_value: str | None
         selected_option["max_levels"],
         selected_option["tp_atr"],
         selected_option["level_atr"],
+        normalize_entry_filter(
+            selected_option["entry_filter_id"],
+            selected_option["initial_move_atr"],
+            selected_option["initial_retrace_atr"],
+        ),
     )
 
     return options, selected_option, payload
 
 
 def _save_cache(
-    symbol: str, exchange: str, max_levels: int, tp_atr: float, level_atr: float, result: dict
+    symbol: str,
+    exchange: str,
+    max_levels: int,
+    tp_atr: float,
+    level_atr: float,
+    entry_filter_config: EntryFilterConfig,
+    result: dict,
 ) -> None:
     """Persist result to strategy_cache, replacing any existing entry."""
+    entry_filter_id, initial_move_atr, initial_retrace_atr = entry_filter_cache_parts(entry_filter_config)
     to_store = {
         k: v
         for k, v in result.items()
         if k not in ("from_cache", "cached_at")
     }
+    to_store.update(entry_filter_payload(entry_filter_config))
     to_store["cache_version"] = STRATEGY_CACHE_VERSION
     result_json = json.dumps(to_store)
     con = get_cache_connection()
     try:
         con.execute(
-            "DELETE FROM strategy_cache WHERE symbol=? AND exchange=? AND max_levels=? AND tp_atr=? AND level_atr=?",
-            [symbol, exchange, max_levels, tp_atr, level_atr],
+            """
+            DELETE FROM strategy_cache
+            WHERE symbol=?
+              AND exchange=?
+              AND max_levels=?
+              AND tp_atr=?
+              AND level_atr=?
+              AND entry_filter_id=?
+              AND initial_move_atr=?
+              AND initial_retrace_atr=?
+            """,
+            [
+                symbol,
+                exchange,
+                max_levels,
+                tp_atr,
+                level_atr,
+                entry_filter_id,
+                initial_move_atr,
+                initial_retrace_atr,
+            ],
         )
         con.execute(
             """
             INSERT INTO strategy_cache
-                (symbol, exchange, max_levels, tp_atr, level_atr, computed_at, result_json)
-            VALUES (?, ?, ?, ?, ?, current_timestamp, ?)
+                (
+                    symbol,
+                    exchange,
+                    max_levels,
+                    tp_atr,
+                    level_atr,
+                    entry_filter_id,
+                    initial_move_atr,
+                    initial_retrace_atr,
+                    computed_at,
+                    result_json
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
             """,
-            [symbol, exchange, max_levels, tp_atr, level_atr, result_json],
+            [
+                symbol,
+                exchange,
+                max_levels,
+                tp_atr,
+                level_atr,
+                entry_filter_id,
+                initial_move_atr,
+                initial_retrace_atr,
+                result_json,
+            ],
         )
     finally:
         con.close()
@@ -1075,6 +1365,7 @@ def _simulate_cycles_new_conn(
     tp_atr: float,
     level_atr: float,
     direction_mode: str,
+    entry_filter_config: EntryFilterConfig,
 ) -> list[dict]:
     """Thread-safe wrapper: opens its own DuckDB connection."""
     con = get_connection()
@@ -1087,6 +1378,7 @@ def _simulate_cycles_new_conn(
             level_atr,
             con,
             direction_mode,
+            entry_filter_config,
         )
     finally:
         con.close()
@@ -1100,8 +1392,10 @@ async def _run_simulation_job(
     tp_atr: float,
     level_atr: float,
     instruments: list[dict],
+    entry_filter_config: EntryFilterConfig | None = None,
 ) -> None:
     """Background task: runs simulation and pushes SSE events to the job queue."""
+    entry_filter_config = entry_filter_config or normalize_entry_filter()
     q: asyncio.Queue = _jobs[job_id]["queue"]
     loop = asyncio.get_running_loop()
     try:
@@ -1118,6 +1412,7 @@ async def _run_simulation_job(
                     tp_atr,
                     level_atr,
                     direction_mode,
+                    entry_filter_config,
                 )
                 if cached is not None and not cached.get("error") and cached.get("results") is not None:
                     all_results[f"{inst['symbol']}|{inst['exchange']}"] = {
@@ -1152,6 +1447,7 @@ async def _run_simulation_job(
                     tp_atr,
                     level_atr,
                     direction_mode,
+                    entry_filter_config,
                 )
                 if cycles:
                     instrument_result = {
@@ -1164,10 +1460,19 @@ async def _run_simulation_job(
                         "max_levels": max_levels,
                         "tp_atr": tp_atr,
                         "level_atr": level_atr,
+                        **entry_filter_payload(entry_filter_config),
                         "total_cycles": len(cycles),
                     }
                     try:
-                        _save_cache(inst["symbol"], inst["exchange"], max_levels, tp_atr, level_atr, instrument_result)
+                        _save_cache(
+                            inst["symbol"],
+                            inst["exchange"],
+                            max_levels,
+                            tp_atr,
+                            level_atr,
+                            entry_filter_config,
+                            instrument_result,
+                        )
                     except Exception:  # noqa: BLE001
                         pass
 
@@ -1189,6 +1494,7 @@ async def _run_simulation_job(
                 "max_levels": max_levels,
                 "tp_atr": tp_atr,
                 "level_atr": level_atr,
+                **entry_filter_payload(entry_filter_config),
                 "total_cycles": total_cycles_all,
             }
         else:
@@ -1215,6 +1521,7 @@ async def _run_simulation_job(
                 tp_atr,
                 level_atr,
                 direction_mode,
+                entry_filter_config,
             )
             await q.put({"type": "progress", "current": 1, "total": 1, "label": symbol})
             if not cycles:
@@ -1228,6 +1535,7 @@ async def _run_simulation_job(
                     "max_levels": max_levels,
                     "tp_atr": tp_atr,
                     "level_atr": level_atr,
+                    **entry_filter_payload(entry_filter_config),
                 }
             else:
                 _jobs[job_id]["result"] = {
@@ -1240,6 +1548,7 @@ async def _run_simulation_job(
                     "max_levels": max_levels,
                     "tp_atr": tp_atr,
                     "level_atr": level_atr,
+                    **entry_filter_payload(entry_filter_config),
                     "total_cycles": len(cycles),
                 }
     except Exception as exc:  # noqa: BLE001
@@ -1252,7 +1561,7 @@ async def _run_simulation_job(
         result = _jobs[job_id].get("result")
         if result and not result.get("error") and symbol != "__ALL__":
             try:
-                _save_cache(symbol, exchange, max_levels, tp_atr, level_atr, result)
+                _save_cache(symbol, exchange, max_levels, tp_atr, level_atr, entry_filter_config, result)
             except Exception:  # noqa: BLE001
                 pass
         await q.put({"type": "done", "url": f"/strategy/result/{job_id}"})
@@ -1305,6 +1614,9 @@ async def strategy_dashboard(
     focus_tp_atr: float | None = None,
     focus_level_atr: float | None = None,
     focus_trade_direction: str | None = None,
+    focus_entry_filter_id: int | None = None,
+    focus_initial_move_atr: float | None = None,
+    focus_initial_retrace_atr: float | None = None,
 ):
     return templates.TemplateResponse(
         "strategy_dashboard.html",
@@ -1317,6 +1629,9 @@ async def strategy_dashboard(
                 focus_tp_atr,
                 focus_level_atr,
                 focus_trade_direction,
+                focus_entry_filter_id,
+                focus_initial_move_atr,
+                focus_initial_retrace_atr,
             ),
         },
     )
@@ -1330,13 +1645,35 @@ async def strategy_run(
     max_levels: int = Form(10),
     tp_atr: float = Form(0.5),
     level_atr: float = Form(1.0),
+    entry_filter_id: int = Form(DEFAULT_ENTRY_FILTER_ID),
+    initial_move_atr: float = Form(DEFAULT_INITIAL_MOVE_ATR),
+    initial_retrace_atr: float = Form(DEFAULT_INITIAL_RETRACE_ATR),
     force: bool = Form(False),
 ):
     instruments = _get_instruments()
+    entry_filter_config = normalize_entry_filter(
+        entry_filter_id,
+        initial_move_atr,
+        initial_retrace_atr,
+    )
     cache_options = _build_cache_selection_options(instruments)
     if symbol == "__ALL__":
-        selected_cache_option = _cache_selection_value("all", "__ALL__", "", max_levels, tp_atr, level_atr)
-        cached = _load_all_instruments_from_cache(instruments, max_levels, tp_atr, level_atr)
+        selected_cache_option = _cache_selection_value(
+            "all",
+            "__ALL__",
+            "",
+            max_levels,
+            tp_atr,
+            level_atr,
+            entry_filter_config,
+        )
+        cached = _load_all_instruments_from_cache(
+            instruments,
+            max_levels,
+            tp_atr,
+            level_atr,
+            entry_filter_config,
+        )
     else:
         instrument = next(
             (
@@ -1358,8 +1695,17 @@ async def strategy_run(
             max_levels,
             tp_atr,
             level_atr,
+            entry_filter_config,
         )
-        cached = _load_cache(symbol, exchange, max_levels, tp_atr, level_atr, direction_mode)
+        cached = _load_cache(
+            symbol,
+            exchange,
+            max_levels,
+            tp_atr,
+            level_atr,
+            direction_mode,
+            entry_filter_config,
+        )
 
     if cached is not None and not force:
         cached = _enrich_all_results_with_mt5_swaps(cached)

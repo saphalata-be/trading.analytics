@@ -389,6 +389,33 @@ def init_cache_db() -> None:
     """Create strategy_cache table in the dedicated cache DB.
     Legacy migration from trading.duckdb is intentionally disabled."""
     con = get_cache_connection()
+
+    def create_strategy_cache_table() -> None:
+        con.execute("""
+            CREATE TABLE strategy_cache (
+                symbol              VARCHAR NOT NULL,
+                exchange            VARCHAR NOT NULL,
+                max_levels          INTEGER NOT NULL,
+                tp_atr              DOUBLE NOT NULL,
+                level_atr           DOUBLE NOT NULL,
+                entry_filter_id     INTEGER NOT NULL DEFAULT 0,
+                initial_move_atr    DOUBLE NOT NULL DEFAULT 0.0,
+                initial_retrace_atr DOUBLE NOT NULL DEFAULT 0.0,
+                computed_at         TIMESTAMP NOT NULL,
+                result_json         VARCHAR NOT NULL,
+                PRIMARY KEY (
+                    symbol,
+                    exchange,
+                    max_levels,
+                    tp_atr,
+                    level_atr,
+                    entry_filter_id,
+                    initial_move_atr,
+                    initial_retrace_atr
+                )
+            )
+        """)
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS mt5_symbols (
             name        VARCHAR PRIMARY KEY,
@@ -401,18 +428,49 @@ def init_cache_db() -> None:
             updated_at  TIMESTAMP
         )
     """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS strategy_cache (
-            symbol      VARCHAR NOT NULL,
-            exchange    VARCHAR NOT NULL,
-            max_levels  INTEGER NOT NULL,
-            tp_atr      DOUBLE NOT NULL,
-            level_atr   DOUBLE NOT NULL,
-            computed_at TIMESTAMP NOT NULL,
-            result_json VARCHAR NOT NULL,
-            PRIMARY KEY (symbol, exchange, max_levels, tp_atr, level_atr)
-        )
-    """)
+
+    strategy_cache_exists = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = 'strategy_cache'
+        """
+    ).fetchone()[0] > 0
+    expected_strategy_cache_pk = [
+        "symbol",
+        "exchange",
+        "max_levels",
+        "tp_atr",
+        "level_atr",
+        "entry_filter_id",
+        "initial_move_atr",
+        "initial_retrace_atr",
+    ]
+
+    if not strategy_cache_exists:
+        create_strategy_cache_table()
+    else:
+        strategy_cache_info = con.execute("PRAGMA table_info('strategy_cache')").fetchall()
+        strategy_cache_pk = [row[1] for row in strategy_cache_info if row[5]]
+        strategy_cache_columns = {row[1] for row in strategy_cache_info}
+        expected_strategy_cache_columns = {
+            "symbol",
+            "exchange",
+            "max_levels",
+            "tp_atr",
+            "level_atr",
+            "entry_filter_id",
+            "initial_move_atr",
+            "initial_retrace_atr",
+            "computed_at",
+            "result_json",
+        }
+        if (
+            strategy_cache_pk != expected_strategy_cache_pk
+            or not expected_strategy_cache_columns.issubset(strategy_cache_columns)
+        ):
+            con.execute("DROP TABLE strategy_cache")
+            create_strategy_cache_table()
 
     con.close()
 
