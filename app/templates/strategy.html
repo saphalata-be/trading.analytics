@@ -70,7 +70,7 @@
   <div class="space-y-4">
     <div class="flex items-center gap-3">
       <h2 class="text-base font-semibold text-gray-200">Résultats — Tous les instruments</h2>
-      <span class="text-xs text-gray-500">{{ total_cycles }} cycles simulés · niveaux max = {{ max_levels }} · TP = {{ tp_atr }}× ATR50 · espacement = {{ level_atr }}× ATR50 · {{ entry_filter_label }}</span>
+      <span class="text-xs text-gray-500">{{ total_cycles }} cycles simulés · niveaux max = {{ max_levels }} · TP = {{ tp_atr }}× ATR · espacement = {{ level_atr }}× ATR · {{ atr_mode_label }} · {{ entry_filter_label }}</span>
       {% if from_cache is defined and from_cache %}
       <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
         ⚡ Cache{% if cached_at is defined and cached_at %} — {{ cached_at.strftime('%d/%m/%Y %H:%M') }}{% endif %}

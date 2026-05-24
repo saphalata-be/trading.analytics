@@ -10,7 +10,7 @@ pure in-memory computation — no database access in subprocesses.
 
 Usage examples
 --------------
-# Default ranges, all instruments, 4 workers
+# Default ranges, all instruments, 4 workers, all ATR modes
 python precalculate.py
 
 # Custom ranges
@@ -62,6 +62,14 @@ from app.strategy_filters import (
     normalize_entry_filter,
 )
 from app.strategy_cache import STRATEGY_CACHE_VERSION, normalize_strategy_cache_payload
+from app.strategy_atr import (
+    ATR_MODE_OPTIONS,
+    DEFAULT_ATR_MODE,
+    atr_mode_label,
+    fixed_atr_price_value,
+    infer_point_size,
+    normalize_atr_mode,
+)
 from app.strategy_stats import aggregate_cycles
 from app.trade_direction import expand_trade_directions, normalize_trade_direction
 
@@ -76,6 +84,7 @@ class ParamCombo:
     max_levels: int
     tp_atr: float
     level_atr: float
+    atr_mode: str
     entry_filter: EntryFilterConfig
 
 
@@ -230,6 +239,18 @@ def _aggregate_local(cycles: list[dict], tp_atr: float, level_atr: float) -> dic
     return aggregate_cycles(cycles, tp_atr, level_atr)
 
 
+def _atr_by_idx_for_mode(
+    atr_mode: str,
+    atr50_by_idx: dict,
+    n_bars: int,
+    point_size: float,
+) -> dict:
+    fixed_value = fixed_atr_price_value(atr_mode, point_size)
+    if fixed_value is None:
+        return atr50_by_idx
+    return {idx: fixed_value for idx in range(n_bars)}
+
+
 # Module-level queue; set by _worker_init() called as the ProcessPoolExecutor
 # initializer — workers push each result immediately so the main process can
 # save it without waiting for all combos of a symbol to complete.
@@ -257,6 +278,7 @@ def _worker_instrument(
     bar_days: list,
     hourly_indices: list,
     atr50_by_idx: dict,
+    point_size: float,
     combos: list[ParamCombo],
 ) -> None:
     """
@@ -265,11 +287,22 @@ def _worker_instrument(
     Each result is pushed to _result_queue immediately so the main process
     can save it without waiting for the full symbol to complete.
     """
+    atr_by_mode: dict[str, dict] = {DEFAULT_ATR_MODE: atr50_by_idx}
     for combo in combos:
         try:
+            atr_by_idx = atr_by_mode.get(combo.atr_mode)
+            if atr_by_idx is None:
+                atr_by_idx = _atr_by_idx_for_mode(
+                    combo.atr_mode,
+                    atr50_by_idx,
+                    len(bars_open),
+                    point_size,
+                )
+                atr_by_mode[combo.atr_mode] = atr_by_idx
+
             cycles = _simulate_fast(
                 bars_open, bars_high, bars_low, bar_ts_min, bar_days,
-                hourly_indices, atr50_by_idx,
+                hourly_indices, atr_by_idx,
                 combo.max_levels,
                 combo.tp_atr,
                 combo.level_atr,
@@ -289,6 +322,8 @@ def _worker_instrument(
                 "max_levels": combo.max_levels,
                 "tp_atr": combo.tp_atr,
                 "level_atr": combo.level_atr,
+                "atr_mode": combo.atr_mode,
+                "atr_mode_label": atr_mode_label(combo.atr_mode),
                 **entry_filter_payload(combo.entry_filter),
                 "total_cycles": len(cycles),
                 "cache_version": STRATEGY_CACHE_VERSION,
@@ -315,6 +350,7 @@ def _cache_exists(symbol: str, exchange: str, combo: ParamCombo, direction_mode:
               AND max_levels=?
               AND tp_atr=?
               AND level_atr=?
+              AND atr_mode=?
               AND entry_filter_id=?
               AND initial_move_atr=?
               AND initial_retrace_atr=?
@@ -325,6 +361,7 @@ def _cache_exists(symbol: str, exchange: str, combo: ParamCombo, direction_mode:
                 combo.max_levels,
                 combo.tp_atr,
                 combo.level_atr,
+                combo.atr_mode,
                 entry_filter_id,
                 initial_move_atr,
                 initial_retrace_atr,
@@ -339,6 +376,7 @@ def _cache_exists(symbol: str, exchange: str, combo: ParamCombo, direction_mode:
         return (
             payload is not None
             and payload.get("direction_mode") == normalize_trade_direction(direction_mode)
+            and payload.get("atr_mode") == combo.atr_mode
             and payload.get("entry_filter_id") == combo.entry_filter.filter_id
             and payload.get("initial_move_atr") == combo.entry_filter.initial_move_atr
             and payload.get("initial_retrace_atr") == combo.entry_filter.initial_retrace_atr
@@ -350,6 +388,8 @@ def _cache_exists(symbol: str, exchange: str, combo: ParamCombo, direction_mode:
 def _save(symbol: str, exchange: str, combo: ParamCombo, result: dict) -> None:
     to_store = {k: v for k, v in result.items() if k not in ("from_cache", "cached_at")}
     to_store.update(entry_filter_payload(combo.entry_filter))
+    to_store["atr_mode"] = combo.atr_mode
+    to_store["atr_mode_label"] = atr_mode_label(combo.atr_mode)
     to_store["cache_version"] = STRATEGY_CACHE_VERSION
     result_json = json.dumps(to_store)
     entry_filter_id, initial_move_atr, initial_retrace_atr = entry_filter_cache_parts(combo.entry_filter)
@@ -363,6 +403,7 @@ def _save(symbol: str, exchange: str, combo: ParamCombo, result: dict) -> None:
               AND max_levels=?
               AND tp_atr=?
               AND level_atr=?
+              AND atr_mode=?
               AND entry_filter_id=?
               AND initial_move_atr=?
               AND initial_retrace_atr=?
@@ -373,6 +414,7 @@ def _save(symbol: str, exchange: str, combo: ParamCombo, result: dict) -> None:
                 combo.max_levels,
                 combo.tp_atr,
                 combo.level_atr,
+                combo.atr_mode,
                 entry_filter_id,
                 initial_move_atr,
                 initial_retrace_atr,
@@ -387,13 +429,14 @@ def _save(symbol: str, exchange: str, combo: ParamCombo, result: dict) -> None:
                     max_levels,
                     tp_atr,
                     level_atr,
+                    atr_mode,
                     entry_filter_id,
                     initial_move_atr,
                     initial_retrace_atr,
                     computed_at,
                     result_json
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
             """,
             [
                 symbol,
@@ -401,6 +444,7 @@ def _save(symbol: str, exchange: str, combo: ParamCombo, result: dict) -> None:
                 combo.max_levels,
                 combo.tp_atr,
                 combo.level_atr,
+                combo.atr_mode,
                 entry_filter_id,
                 initial_move_atr,
                 initial_retrace_atr,
@@ -453,7 +497,7 @@ def _get_instruments(con, symbol: str | None, exchange: str | None) -> list[tupl
 
 def _load_instrument_data(
     con, symbol: str, exchange: str
-) -> tuple[list, list, list, list, list, list, dict]:
+) -> tuple[list, list, list, list, list, list, dict, float]:
     """
     Load and pre-process instrument data into primitive-only structures.
 
@@ -464,6 +508,7 @@ def _load_instrument_data(
     bar_days                       : list[str]  (YYYY-MM-DD, for reporting)
     hourly_indices                 : list[int]  (bar indices where minute == 0)
     atr50_by_idx                   : dict[int, float]  (ATR50 keyed by bar index)
+    point_size                     : float      (price value of one point)
     """
     min_rows = con.execute(
         """
@@ -476,11 +521,12 @@ def _load_instrument_data(
     ).fetchall()
 
     if not min_rows:
-        return [], [], [], [], [], [], {}
+        return [], [], [], [], [], [], {}, 1.0
 
     bars_open = [r[1] for r in min_rows]
     bars_high = [r[2] for r in min_rows]
     bars_low  = [r[3] for r in min_rows]
+    point_size = infer_point_size(symbol, bars_open + bars_high + bars_low)
     bar_ts_min = [int(r[0].timestamp()) // 60 for r in min_rows]
     bar_days = [r[0].date().isoformat() for r in min_rows]
     hourly_indices = [i for i, r in enumerate(min_rows) if r[0].minute == 0]
@@ -514,7 +560,7 @@ def _load_instrument_data(
         if row[0].date() in atr50_by_date
     }
 
-    return bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx
+    return bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx, point_size
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +595,14 @@ def main() -> None:
         default=[1.0, 1.5, 2.0],
         metavar="F",
         help="List of level_atr values to test (default: 1.0 1.5 2.0)",
+    )
+    parser.add_argument(
+        "--atr-mode",
+        nargs="+",
+        choices=ATR_MODE_OPTIONS,
+        default=list(ATR_MODE_OPTIONS),
+        metavar="MODE",
+        help="ATR modes to test: d1_50 fixed_500 fixed_1000 (default: all)",
     )
     parser.add_argument(
         "--entry-filter",
@@ -614,11 +668,18 @@ def main() -> None:
             )
 
     all_combos = [
-        ParamCombo(max_levels=ml, tp_atr=tp, level_atr=la, entry_filter=entry_filter)
-        for ml, tp, la, entry_filter in itertools.product(
+        ParamCombo(
+            max_levels=ml,
+            tp_atr=tp,
+            level_atr=la,
+            atr_mode=normalize_atr_mode(atr_mode),
+            entry_filter=entry_filter,
+        )
+        for ml, tp, la, atr_mode, entry_filter in itertools.product(
             args.max_levels,
             args.tp_atr,
             args.level_atr,
+            args.atr_mode,
             entry_filters,
         )
     ]
@@ -639,7 +700,8 @@ def main() -> None:
     total_combos = len(instruments) * n_combos
     print(f"Instruments                      : {len(instruments)}")
     print(f"Filtres d'entree                 : {', '.join(entry_filter_label(item) for item in entry_filters)}")
-    print(f"Combinaisons de paramètres       : {len(args.max_levels)} × {len(args.tp_atr)} × {len(args.level_atr)} = {n_combos}")
+    print(f"Modes ATR                        : {', '.join(atr_mode_label(item) for item in args.atr_mode)}")
+    print(f"Combinaisons de parametres       : {len(args.max_levels)} x {len(args.tp_atr)} x {len(args.level_atr)} x {len(args.atr_mode)} = {n_combos}")
     print(f"Total (instruments × paramètres) : {total_combos}")
     print(f"Workers parallèles               : {args.workers}")
     print()
@@ -684,7 +746,7 @@ def main() -> None:
                     # This lets the web app connect freely between instrument loads.
                     load_con = get_connection()
                     try:
-                        bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx = \
+                        bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx, point_size = \
                             _load_instrument_data(load_con, symbol, exchange)
                     finally:
                         load_con.close()
@@ -701,7 +763,7 @@ def main() -> None:
                             _worker_instrument,
                             symbol, exchange, direction_mode,
                             bars_open, bars_high, bars_low,
-                            bar_ts_min, bar_days, hourly_indices, atr50_by_idx,
+                            bar_ts_min, bar_days, hourly_indices, atr50_by_idx, point_size,
                             combo_batch,
                         )
                         futures[future] = (symbol, exchange)
@@ -735,6 +797,7 @@ def main() -> None:
                             f"[{pct:5.1f}%] {done_jobs}/{total_jobs}  "
                             f"{symbol:<12} ML={combo.max_levels:<3} "
                             f"TP={combo.tp_atr:<4} LA={combo.level_atr:<4} "
+                            f"ATR={atr_mode_label(combo.atr_mode):<16} "
                             f"F={combo.entry_filter.filter_id:<2}  "
                             f"{status:<60}  "
                             f"~{remaining/60:.1f} min restantes",

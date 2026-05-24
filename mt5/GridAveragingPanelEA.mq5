@@ -17,6 +17,15 @@ input int    InpMaxLevels          = 8;
 input int    InpMaxSlippagePoints  = 20;
 input int    InpMaxSpreadPoints    = 50;
 
+enum AtrStrategyMode
+{
+   ATR_STRATEGY_D1_50 = 0,      // Vrai ATR(50) D1
+   ATR_STRATEGY_FIXED_500 = 500, // ATR fixe 500 points
+   ATR_STRATEGY_FIXED_1000 = 1000 // ATR fixe 1000 points
+};
+
+input AtrStrategyMode InpAtrStrategyMode = ATR_STRATEGY_D1_50;
+
 enum TradeSide
 {
    SIDE_BUY = 0,
@@ -488,7 +497,7 @@ void BuildPanel()
    CreateRow(1, "Swap achat", "SWAPBUY", false, "-");
    CreateRow(2, "Swap vente", "SWAPSELL", false, "-");
    CreateRow(3, "Spread actuel", "SPREAD", false, "-");
-   CreateRow(4, "ATR(50) daily", "ATR", false, "-");
+   CreateRow(4, "ATR strategie", "ATR", false, "-");
    CreateRow(5, "Valeur ATR", "ATRMONEY", false, "-");
 
    int direction_y = PANEL_Y + 42 + 6 * ROW_H;
@@ -530,7 +539,7 @@ void DeletePanel()
 //+------------------------------------------------------------------+
 //| Calculations                                                     |
 //+------------------------------------------------------------------+
-double Atr50DailyPoints()
+double DailyAtr50Points()
 {
    if(atr_handle == INVALID_HANDLE)
       return 0.0;
@@ -543,6 +552,16 @@ double Atr50DailyPoints()
    if(_Point <= 0.0)
       return 0.0;
    return buffer[0] / _Point;
+}
+
+double StrategyAtrPoints()
+{
+   if(InpAtrStrategyMode == ATR_STRATEGY_FIXED_500)
+      return 500.0;
+   if(InpAtrStrategyMode == ATR_STRATEGY_FIXED_1000)
+      return 1000.0;
+
+   return DailyAtr50Points();
 }
 
 double AtrMoneyValue(const double atr_points)
@@ -694,7 +713,7 @@ void UpdatePanel()
    double swap_buy = SymbolInfoDouble(_Symbol, SYMBOL_SWAP_LONG);
    double swap_sell = SymbolInfoDouble(_Symbol, SYMBOL_SWAP_SHORT);
    int spread = CurrentSpreadPoints();
-   double atr_points = Atr50DailyPoints();
+   double atr_points = StrategyAtrPoints();
    double atr_money = AtrMoneyValue(atr_points);
    string account_currency = AccountInfoString(ACCOUNT_CURRENCY);
    double profit = TotalNetProfit();
@@ -974,11 +993,14 @@ int OnInit()
    trade.SetExpertMagicNumber(InpMagicNumber);
    trade.SetDeviationInPoints(settings.max_slippage_points);
 
-   atr_handle = iATR(_Symbol, PERIOD_D1, 50);
-   if(atr_handle == INVALID_HANDLE)
+   if(InpAtrStrategyMode == ATR_STRATEGY_D1_50)
    {
-      Print("Impossible de creer le handle ATR(50) D1.");
-      return INIT_FAILED;
+      atr_handle = iATR(_Symbol, PERIOD_D1, 50);
+      if(atr_handle == INVALID_HANDLE)
+      {
+         Print("Impossible de creer le handle ATR(50) D1.");
+         return INIT_FAILED;
+      }
    }
 
    BuildPanel();

@@ -5,9 +5,10 @@ from app.strategy_filters import (
     entry_filter_label,
     normalize_entry_filter,
 )
+from app.strategy_atr import DEFAULT_ATR_MODE, atr_mode_label, normalize_atr_mode
 from app.trade_direction import normalize_trade_direction
 
-STRATEGY_CACHE_VERSION = 8
+STRATEGY_CACHE_VERSION = 9
 SUPPORTED_STRATEGY_CACHE_VERSIONS = {STRATEGY_CACHE_VERSION}
 
 _PEAK_LEVEL_FIELDS = (
@@ -39,6 +40,8 @@ def normalize_strategy_cache_payload(payload: dict | None) -> dict | None:
     normalized = dict(payload)
     normalized["cache_version"] = STRATEGY_CACHE_VERSION
     normalized["direction_mode"] = normalize_trade_direction(payload.get("direction_mode"))
+    normalized["atr_mode"] = normalize_atr_mode(payload.get("atr_mode", DEFAULT_ATR_MODE))
+    normalized["atr_mode_label"] = atr_mode_label(normalized["atr_mode"])
     entry_filter = normalize_entry_filter(
         payload.get("entry_filter_id", DEFAULT_ENTRY_FILTER_ID),
         payload.get("initial_move_atr"),
