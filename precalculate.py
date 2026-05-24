@@ -57,6 +57,7 @@ from app.strategy_filters import (
     entry_filter_cache_parts,
     entry_filter_label,
     entry_filter_payload,
+    entry_filter_uses_sequential_entries,
     find_entry_for_arrays,
     find_sequential_entries_for_arrays,
     normalize_entry_filter,
@@ -172,6 +173,75 @@ def _run_cycle_fast(
     }
 
 
+def _compute_adx_by_minute_idx_fast(
+    hour_ts_min: list,
+    hour_high: list,
+    hour_low: list,
+    hour_close: list,
+    bar_ts_min: list,
+    period: int,
+) -> dict[int, float]:
+    if period < 2 or len(hour_ts_min) < period * 2:
+        return {}
+
+    true_ranges: list[float] = []
+    plus_dm: list[float] = []
+    minus_dm: list[float] = []
+    for i in range(1, len(hour_ts_min)):
+        high = hour_high[i]
+        low = hour_low[i]
+        prev_high = hour_high[i - 1]
+        prev_low = hour_low[i - 1]
+        prev_close = hour_close[i - 1]
+        up_move = high - prev_high
+        down_move = prev_low - low
+        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+
+    smoothed_tr = sum(true_ranges[:period])
+    smoothed_plus = sum(plus_dm[:period])
+    smoothed_minus = sum(minus_dm[:period])
+    dx_values: list[float] = []
+    adx: float | None = None
+    adx_points: list[tuple[int, float]] = []
+
+    for idx in range(period - 1, len(true_ranges)):
+        if idx > period - 1:
+            smoothed_tr = smoothed_tr - (smoothed_tr / period) + true_ranges[idx]
+            smoothed_plus = smoothed_plus - (smoothed_plus / period) + plus_dm[idx]
+            smoothed_minus = smoothed_minus - (smoothed_minus / period) + minus_dm[idx]
+
+        if smoothed_tr <= 0:
+            dx = 0.0
+        else:
+            plus_di = 100.0 * smoothed_plus / smoothed_tr
+            minus_di = 100.0 * smoothed_minus / smoothed_tr
+            di_sum = plus_di + minus_di
+            dx = 0.0 if di_sum <= 0 else 100.0 * abs(plus_di - minus_di) / di_sum
+
+        dx_values.append(dx)
+        if len(dx_values) < period:
+            continue
+        if len(dx_values) == period:
+            adx = sum(dx_values) / period
+        else:
+            adx = ((adx or 0.0) * (period - 1) + dx) / period
+        adx_points.append((hour_ts_min[idx + 1], adx))
+
+    if not adx_points:
+        return {}
+
+    adx_by_idx: dict[int, float] = {}
+    point_idx = -1
+    for bar_idx, ts_min in enumerate(bar_ts_min):
+        while point_idx + 1 < len(adx_points) and adx_points[point_idx + 1][0] + 60 <= ts_min:
+            point_idx += 1
+        if point_idx >= 0:
+            adx_by_idx[bar_idx] = adx_points[point_idx][1]
+    return adx_by_idx
+
+
 def _simulate_fast(
     bars_open: list,
     bars_high: list,
@@ -185,10 +255,11 @@ def _simulate_fast(
     level_atr: float,
     direction_mode: str,
     entry_filter: EntryFilterConfig,
+    adx_by_idx: dict[int, float] | None = None,
 ) -> list[dict]:
     """Full simulation over all hourly cycle starts. No DB, no datetime."""
     results = []
-    if entry_filter.filter_id != DEFAULT_ENTRY_FILTER_ID:
+    if entry_filter_uses_sequential_entries(entry_filter):
         for direction in expand_trade_directions(direction_mode):
             for entry_idx, entry_price in find_sequential_entries_for_arrays(
                 bars_open,
@@ -222,6 +293,7 @@ def _simulate_fast(
                 atr50,
                 direction,
                 entry_filter,
+                adx_by_idx,
             )
             if entry is None:
                 continue
@@ -279,6 +351,10 @@ def _worker_instrument(
     hourly_indices: list,
     atr50_by_idx: dict,
     point_size: float,
+    hour_ts_min: list,
+    hour_high: list,
+    hour_low: list,
+    hour_close: list,
     combos: list[ParamCombo],
 ) -> None:
     """
@@ -288,6 +364,7 @@ def _worker_instrument(
     can save it without waiting for the full symbol to complete.
     """
     atr_by_mode: dict[str, dict] = {DEFAULT_ATR_MODE: atr50_by_idx}
+    adx_by_period: dict[int, dict[int, float]] = {}
     for combo in combos:
         try:
             atr_by_idx = atr_by_mode.get(combo.atr_mode)
@@ -300,6 +377,20 @@ def _worker_instrument(
                 )
                 atr_by_mode[combo.atr_mode] = atr_by_idx
 
+            adx_by_idx = None
+            if combo.entry_filter.adx_period is not None:
+                adx_by_idx = adx_by_period.get(combo.entry_filter.adx_period)
+                if adx_by_idx is None:
+                    adx_by_idx = _compute_adx_by_minute_idx_fast(
+                        hour_ts_min,
+                        hour_high,
+                        hour_low,
+                        hour_close,
+                        bar_ts_min,
+                        combo.entry_filter.adx_period,
+                    )
+                    adx_by_period[combo.entry_filter.adx_period] = adx_by_idx
+
             cycles = _simulate_fast(
                 bars_open, bars_high, bars_low, bar_ts_min, bar_days,
                 hourly_indices, atr_by_idx,
@@ -308,6 +399,7 @@ def _worker_instrument(
                 combo.level_atr,
                 direction_mode,
                 combo.entry_filter,
+                adx_by_idx,
             )
             if not cycles:
                 _result_queue.put((symbol, exchange, combo, None, f"Aucune donnée 1min pour {symbol} ({exchange})"))
@@ -497,7 +589,7 @@ def _get_instruments(con, symbol: str | None, exchange: str | None) -> list[tupl
 
 def _load_instrument_data(
     con, symbol: str, exchange: str
-) -> tuple[list, list, list, list, list, list, dict, float]:
+) -> tuple[list, list, list, list, list, list, dict, float, list, list, list, list]:
     """
     Load and pre-process instrument data into primitive-only structures.
 
@@ -509,6 +601,7 @@ def _load_instrument_data(
     hourly_indices                 : list[int]  (bar indices where minute == 0)
     atr50_by_idx                   : dict[int, float]  (ATR50 keyed by bar index)
     point_size                     : float      (price value of one point)
+    hour_*                         : list       (1h bars for ADX)
     """
     min_rows = con.execute(
         """
@@ -521,7 +614,7 @@ def _load_instrument_data(
     ).fetchall()
 
     if not min_rows:
-        return [], [], [], [], [], [], {}, 1.0
+        return [], [], [], [], [], [], {}, 1.0, [], [], [], []
 
     bars_open = [r[1] for r in min_rows]
     bars_high = [r[2] for r in min_rows]
@@ -560,7 +653,34 @@ def _load_instrument_data(
         if row[0].date() in atr50_by_date
     }
 
-    return bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx, point_size
+    hour_rows = con.execute(
+        """
+        SELECT datetime, high, low, close
+        FROM ohlcv
+        WHERE symbol=? AND exchange=? AND timeframe='1h'
+        ORDER BY datetime ASC
+        """,
+        [symbol, exchange],
+    ).fetchall()
+    hour_ts_min = [int(row[0].timestamp()) // 60 for row in hour_rows]
+    hour_high = [row[1] for row in hour_rows]
+    hour_low = [row[2] for row in hour_rows]
+    hour_close = [row[3] for row in hour_rows]
+
+    return (
+        bars_open,
+        bars_high,
+        bars_low,
+        bar_ts_min,
+        bar_days,
+        hourly_indices,
+        atr50_by_idx,
+        point_size,
+        hour_ts_min,
+        hour_high,
+        hour_low,
+        hour_close,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -608,9 +728,9 @@ def main() -> None:
         "--entry-filter",
         nargs="+",
         type=int,
-        default=[0, 1],
+        default=[0, 1, 2],
         metavar="N",
-        help="Entry filters to test: 0=no filter, 1=initial ATR move (default: 0)",
+        help="Entry filters to test: 0=no filter, 1=initial ATR move, 2=ADX range filter (default: 0 1 2)",
     )
     parser.add_argument(
         "--initial-move-atr",
@@ -627,6 +747,22 @@ def main() -> None:
         default=[0.5],
         metavar="F",
         help="Retrace in ATR required after the initial move for entry filter 1 (default: 0.5)",
+    )
+    parser.add_argument(
+        "--adx-max",
+        nargs="+",
+        type=float,
+        default=[25.0],
+        metavar="F",
+        help="Maximum 1h ADX allowed for entry filter 2 (default: 25.0)",
+    )
+    parser.add_argument(
+        "--adx-period",
+        nargs="+",
+        type=int,
+        default=[14],
+        metavar="N",
+        help="ADX period for entry filter 2 (default: 14)",
     )
     parser.add_argument(
         "--symbol",
@@ -659,13 +795,20 @@ def main() -> None:
         if filter_id == 0:
             entry_filters.append(normalize_entry_filter(filter_id))
             continue
-        for initial_move_atr, initial_retrace_atr in itertools.product(
-            args.initial_move_atr,
-            args.initial_retrace_atr,
-        ):
-            entry_filters.append(
-                normalize_entry_filter(filter_id, initial_move_atr, initial_retrace_atr)
-            )
+        if filter_id == 1:
+            for initial_move_atr, initial_retrace_atr in itertools.product(
+                args.initial_move_atr,
+                args.initial_retrace_atr,
+            ):
+                entry_filters.append(
+                    normalize_entry_filter(filter_id, initial_move_atr, initial_retrace_atr)
+                )
+            continue
+        if filter_id == 2:
+            for adx_max, adx_period in itertools.product(args.adx_max, args.adx_period):
+                entry_filters.append(normalize_entry_filter(filter_id, adx_max, adx_period))
+            continue
+        raise ValueError(f"Filtre d'entree inconnu: {filter_id}")
 
     all_combos = [
         ParamCombo(
@@ -746,7 +889,20 @@ def main() -> None:
                     # This lets the web app connect freely between instrument loads.
                     load_con = get_connection()
                     try:
-                        bars_open, bars_high, bars_low, bar_ts_min, bar_days, hourly_indices, atr50_by_idx, point_size = \
+                        (
+                            bars_open,
+                            bars_high,
+                            bars_low,
+                            bar_ts_min,
+                            bar_days,
+                            hourly_indices,
+                            atr50_by_idx,
+                            point_size,
+                            hour_ts_min,
+                            hour_high,
+                            hour_low,
+                            hour_close,
+                        ) = \
                             _load_instrument_data(load_con, symbol, exchange)
                     finally:
                         load_con.close()
@@ -764,6 +920,7 @@ def main() -> None:
                             symbol, exchange, direction_mode,
                             bars_open, bars_high, bars_low,
                             bar_ts_min, bar_days, hourly_indices, atr50_by_idx, point_size,
+                            hour_ts_min, hour_high, hour_low, hour_close,
                             combo_batch,
                         )
                         futures[future] = (symbol, exchange)

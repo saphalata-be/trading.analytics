@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.strategy_filters import (
     DEFAULT_ENTRY_FILTER_ID,
+    ENTRY_FILTER_ADX_RANGE,
     entry_filter_label,
     normalize_entry_filter,
 )
@@ -42,14 +43,22 @@ def normalize_strategy_cache_payload(payload: dict | None) -> dict | None:
     normalized["direction_mode"] = normalize_trade_direction(payload.get("direction_mode"))
     normalized["atr_mode"] = normalize_atr_mode(payload.get("atr_mode", DEFAULT_ATR_MODE))
     normalized["atr_mode_label"] = atr_mode_label(normalized["atr_mode"])
+    entry_filter_id = payload.get("entry_filter_id", DEFAULT_ENTRY_FILTER_ID)
+    first_filter_param = payload.get("initial_move_atr")
+    second_filter_param = payload.get("initial_retrace_atr")
+    if entry_filter_id == ENTRY_FILTER_ADX_RANGE:
+        first_filter_param = payload.get("adx_max") or first_filter_param
+        second_filter_param = payload.get("adx_period") or second_filter_param
     entry_filter = normalize_entry_filter(
-        payload.get("entry_filter_id", DEFAULT_ENTRY_FILTER_ID),
-        payload.get("initial_move_atr"),
-        payload.get("initial_retrace_atr"),
+        entry_filter_id,
+        first_filter_param,
+        second_filter_param,
     )
     normalized["entry_filter_id"] = entry_filter.filter_id
     normalized["initial_move_atr"] = entry_filter.initial_move_atr
     normalized["initial_retrace_atr"] = entry_filter.initial_retrace_atr
+    normalized["adx_max"] = entry_filter.adx_max
+    normalized["adx_period"] = entry_filter.adx_period
     normalized["entry_filter_label"] = entry_filter_label(entry_filter)
 
     results = normalized.get("results")

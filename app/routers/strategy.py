@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
@@ -35,6 +35,7 @@ from app.strategy_filters import (
     entry_filter_cache_parts,
     entry_filter_label,
     entry_filter_payload,
+    entry_filter_uses_sequential_entries,
     find_entry_for_arrays,
     find_sequential_entries_for_arrays,
     normalize_entry_filter,
@@ -118,6 +119,94 @@ def _compute_atr50(con, symbol: str, exchange: str, before_dt: datetime) -> Opti
     return sum(h - l for h, l in rows) / len(rows)
 
 
+def _compute_adx_points(rows: list, period: int) -> list[tuple[datetime, float]]:
+    """Return ADX values keyed by the source bar datetime."""
+    if period < 2 or len(rows) < period * 2:
+        return []
+
+    true_ranges: list[float] = []
+    plus_dm: list[float] = []
+    minus_dm: list[float] = []
+    for i in range(1, len(rows)):
+        _, high, low, close = rows[i]
+        _, prev_high, prev_low, prev_close = rows[i - 1]
+        up_move = high - prev_high
+        down_move = prev_low - low
+        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+
+    if len(true_ranges) < period:
+        return []
+
+    smoothed_tr = sum(true_ranges[:period])
+    smoothed_plus = sum(plus_dm[:period])
+    smoothed_minus = sum(minus_dm[:period])
+    dx_values: list[float] = []
+    adx: float | None = None
+    adx_points: list[tuple[datetime, float]] = []
+
+    for idx in range(period - 1, len(true_ranges)):
+        if idx > period - 1:
+            smoothed_tr = smoothed_tr - (smoothed_tr / period) + true_ranges[idx]
+            smoothed_plus = smoothed_plus - (smoothed_plus / period) + plus_dm[idx]
+            smoothed_minus = smoothed_minus - (smoothed_minus / period) + minus_dm[idx]
+
+        if smoothed_tr <= 0:
+            dx = 0.0
+        else:
+            plus_di = 100.0 * smoothed_plus / smoothed_tr
+            minus_di = 100.0 * smoothed_minus / smoothed_tr
+            di_sum = plus_di + minus_di
+            dx = 0.0 if di_sum <= 0 else 100.0 * abs(plus_di - minus_di) / di_sum
+
+        dx_values.append(dx)
+        if len(dx_values) < period:
+            continue
+        if len(dx_values) == period:
+            adx = sum(dx_values) / period
+        else:
+            adx = ((adx or 0.0) * (period - 1) + dx) / period
+        adx_points.append((rows[idx + 1][0], adx))
+
+    return adx_points
+
+
+def _load_adx_by_minute_idx(
+    con,
+    symbol: str,
+    exchange: str,
+    bars: list,
+    period: int,
+) -> dict[int, float]:
+    hour_rows = con.execute(
+        """
+        SELECT datetime, high, low, close
+        FROM ohlcv
+        WHERE symbol = ? AND exchange = ? AND timeframe = '1h'
+        ORDER BY datetime ASC
+        """,
+        [symbol, exchange],
+    ).fetchall()
+    adx_points = _compute_adx_points(hour_rows, period)
+    if not adx_points:
+        return {}
+
+    adx_by_idx: dict[int, float] = {}
+    point_idx = -1
+    one_hour = timedelta(hours=1)
+    for bar_idx, bar in enumerate(bars):
+        bar_dt: datetime = bar[0]
+        while (
+            point_idx + 1 < len(adx_points)
+            and adx_points[point_idx + 1][0] + one_hour <= bar_dt
+        ):
+            point_idx += 1
+        if point_idx >= 0:
+            adx_by_idx[bar_idx] = adx_points[point_idx][1]
+    return adx_by_idx
+
+
 def _simulate_cycles(
     symbol: str,
     exchange: str,
@@ -150,6 +239,15 @@ def _simulate_cycles(
     bars_high = [bar[2] for bar in bars]
     bars_low = [bar[3] for bar in bars]
     fixed_atr = fixed_atr_price_value(atr_mode, infer_point_size(symbol, bars_open + bars_high + bars_low))
+    adx_by_idx: dict[int, float] | None = None
+    if entry_filter_config.adx_period is not None:
+        adx_by_idx = _load_adx_by_minute_idx(
+            con,
+            symbol,
+            exchange,
+            bars,
+            entry_filter_config.adx_period,
+        )
 
     # Identify all full-hour bar indices
     hourly_indices: list[int] = [
@@ -161,7 +259,7 @@ def _simulate_cycles(
 
     results: list[dict] = []
 
-    if entry_filter_config.filter_id != DEFAULT_ENTRY_FILTER_ID:
+    if entry_filter_uses_sequential_entries(entry_filter_config):
         atr50_by_idx: dict[int, float] = {}
         for idx, bar in enumerate(bars):
             bar_dt: datetime = bar[0]
@@ -234,6 +332,7 @@ def _simulate_cycles(
                 atr50,
                 direction,
                 entry_filter_config,
+                adx_by_idx,
             )
             if entry is None:
                 continue

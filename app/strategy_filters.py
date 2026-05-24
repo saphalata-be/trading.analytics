@@ -5,10 +5,13 @@ from dataclasses import dataclass
 
 ENTRY_FILTER_NONE = 0
 ENTRY_FILTER_INITIAL_MOVE = 1
+ENTRY_FILTER_ADX_RANGE = 2
 
 DEFAULT_ENTRY_FILTER_ID = ENTRY_FILTER_NONE
 DEFAULT_INITIAL_MOVE_ATR = 2.0
 DEFAULT_INITIAL_RETRACE_ATR = 0.5
+DEFAULT_ADX_MAX = 25.0
+DEFAULT_ADX_PERIOD = 14
 
 
 @dataclass(frozen=True)
@@ -16,6 +19,8 @@ class EntryFilterConfig:
     filter_id: int = DEFAULT_ENTRY_FILTER_ID
     initial_move_atr: float | None = None
     initial_retrace_atr: float | None = None
+    adx_max: float | None = None
+    adx_period: int | None = None
 
 
 def normalize_entry_filter(
@@ -45,6 +50,21 @@ def normalize_entry_filter(
             initial_retrace_atr=retrace_atr,
         )
 
+    if normalized_filter_id == ENTRY_FILTER_ADX_RANGE:
+        adx_max = DEFAULT_ADX_MAX if initial_move_atr is None else float(initial_move_atr)
+        adx_period = DEFAULT_ADX_PERIOD if initial_retrace_atr is None else int(initial_retrace_atr)
+        if adx_max <= 0:
+            raise ValueError("Le seuil ADX doit etre strictement positif.")
+        if adx_period < 2:
+            raise ValueError("La periode ADX doit etre superieure ou egale a 2.")
+        return EntryFilterConfig(
+            filter_id=ENTRY_FILTER_ADX_RANGE,
+            initial_move_atr=adx_max,
+            initial_retrace_atr=float(adx_period),
+            adx_max=adx_max,
+            adx_period=adx_period,
+        )
+
     raise ValueError(f"Filtre d'entree inconnu: {normalized_filter_id}")
 
 
@@ -53,6 +73,8 @@ def entry_filter_payload(config: EntryFilterConfig) -> dict:
         "entry_filter_id": config.filter_id,
         "initial_move_atr": config.initial_move_atr,
         "initial_retrace_atr": config.initial_retrace_atr,
+        "adx_max": config.adx_max,
+        "adx_period": config.adx_period,
         "entry_filter_label": entry_filter_label(config),
     }
 
@@ -65,6 +87,8 @@ def entry_filter_label(config: EntryFilterConfig) -> str:
             "Filtre 1 - Mouvement initial "
             f"{config.initial_move_atr:g} ATR puis retour {config.initial_retrace_atr:g} ATR"
         )
+    if config.filter_id == ENTRY_FILTER_ADX_RANGE:
+        return f"Filtre 2 - ADX 1h < {config.adx_max:g} (periode {config.adx_period})"
     return f"Filtre {config.filter_id}"
 
 
@@ -76,6 +100,10 @@ def entry_filter_cache_parts(config: EntryFilterConfig) -> tuple[int, float, flo
     )
 
 
+def entry_filter_uses_sequential_entries(config: EntryFilterConfig) -> bool:
+    return config.filter_id == ENTRY_FILTER_INITIAL_MOVE
+
+
 def find_entry_for_arrays(
     bars_open: list,
     bars_high: list,
@@ -84,8 +112,17 @@ def find_entry_for_arrays(
     atr50: float,
     direction: str,
     config: EntryFilterConfig,
+    adx_by_idx: dict[int, float] | None = None,
 ) -> tuple[int, float] | None:
     if config.filter_id == ENTRY_FILTER_NONE:
+        return start_idx, bars_open[start_idx]
+
+    if config.filter_id == ENTRY_FILTER_ADX_RANGE:
+        if adx_by_idx is None:
+            return None
+        adx = adx_by_idx.get(start_idx)
+        if adx is None or adx >= config.adx_max:
+            return None
         return start_idx, bars_open[start_idx]
 
     if config.filter_id != ENTRY_FILTER_INITIAL_MOVE:
