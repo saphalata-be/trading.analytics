@@ -53,6 +53,12 @@ struct LossProjection
    double target_price;
 };
 
+struct PriceProjection
+{
+   bool available;
+   double price;
+};
+
 CTrade trade;
 
 const string PREFIX = "GA_PANEL_";
@@ -412,6 +418,11 @@ string FormatPrice(const double value)
    return DoubleToString(value, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
 }
 
+string PriceLineText(const string label, const double price)
+{
+   return label + " " + FormatPrice(price);
+}
+
 //+------------------------------------------------------------------+
 //| Panel object helpers                                             |
 //+------------------------------------------------------------------+
@@ -541,6 +552,48 @@ void SetLabelText(const string suffix, const string text, const color fg = clrWh
    }
 }
 
+void DeletePriceMarker(const string suffix)
+{
+   ObjectDelete(0, ObjName(suffix + "_LINE"));
+   ObjectDelete(0, ObjName(suffix + "_LABEL"));
+}
+
+void SetPriceMarker(const string suffix, const double price, const string label, const color line_color, const ENUM_LINE_STYLE style)
+{
+   string line_name = ObjName(suffix + "_LINE");
+   if(ObjectFind(0, line_name) < 0)
+      ObjectCreate(0, line_name, OBJ_HLINE, 0, 0, price);
+
+   string text = PriceLineText(label, price);
+   ObjectSetDouble(0, line_name, OBJPROP_PRICE, price);
+   ObjectSetInteger(0, line_name, OBJPROP_COLOR, line_color);
+   ObjectSetInteger(0, line_name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, line_name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, line_name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, line_name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, line_name, OBJPROP_HIDDEN, true);
+   ObjectSetString(0, line_name, OBJPROP_TEXT, text);
+   ObjectSetString(0, line_name, OBJPROP_TOOLTIP, text);
+
+   string label_name = ObjName(suffix + "_LABEL");
+   int period_seconds = PeriodSeconds(_Period);
+   if(period_seconds <= 0)
+      period_seconds = 60;
+   datetime label_time = TimeCurrent() + period_seconds * 5;
+   if(ObjectFind(0, label_name) < 0)
+      ObjectCreate(0, label_name, OBJ_TEXT, 0, label_time, price);
+   else
+      ObjectMove(0, label_name, 0, label_time, price);
+
+   ObjectSetString(0, label_name, OBJPROP_TEXT, text);
+   ObjectSetString(0, label_name, OBJPROP_FONT, "Segoe UI");
+   ObjectSetInteger(0, label_name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, label_name, OBJPROP_COLOR, line_color);
+   ObjectSetInteger(0, label_name, OBJPROP_ANCHOR, ANCHOR_LEFT);
+   ObjectSetInteger(0, label_name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, label_name, OBJPROP_HIDDEN, true);
+}
+
 string EditText(const string suffix)
 {
    string name = ObjName("EDIT_" + suffix);
@@ -599,7 +652,7 @@ void SetStatus(const string text, const color fg = clrLightSkyBlue)
 
 void BuildPanel()
 {
-   int panel_h = 42 + 19 * ROW_H + 80;
+   int panel_h = 42 + 21 * ROW_H + 80;
    CreateRect(ObjName("BG"), PANEL_X, PANEL_Y, PANEL_W, panel_h, (color)0x181818);
    CreateLabel(ObjName("TITLE"), PANEL_X + 12, PANEL_Y + 10, "Grid Averaging EA", 11, clrWhite);
    CreateLabel(ObjName("MAGIC"), PANEL_X + 185, PANEL_Y + 12, "Magic " + IntegerToString(InpMagicNumber), 8, clrSilver);
@@ -626,8 +679,10 @@ void BuildPanel()
    CreateRow(15, "Spread max", "SPREADMAX", true, IntegerToString(settings.max_spread_points));
    CreateRow(16, "Profit cycle", "PROFIT", false, "-");
    CreateRow(17, "Positions / pendings", "COUNTS", false, "-");
+   CreateRow(18, "Prix TP panier", "TPPRICE", false, "-");
+   CreateRow(19, "Prix niveau max", "MAXLEVELPRICE", false, "-");
 
-   int button_y = PANEL_Y + 42 + 18 * ROW_H + 8;
+   int button_y = PANEL_Y + 42 + 20 * ROW_H + 8;
    CreateButton(ObjName("EXECUTE"), PANEL_X + 12, button_y, 96, 26, "Executer", clrSeaGreen);
    CreateButton(ObjName("ADD"), PANEL_X + 118, button_y, 96, 26, "Ajouter", clrSteelBlue);
    CreateButton(ObjName("CLOSE"), PANEL_X + 224, button_y, 88, 26, "Close all", clrFireBrick);
@@ -817,6 +872,196 @@ LossProjection BuildLossProjection()
    return projection;
 }
 
+double ProjectedOpenPositionsProfit(const TradeSide side, const double &entry_prices[], const double &entry_volumes[], const double target_price, const double swap_total)
+{
+   ENUM_ORDER_TYPE calc_type = side == SIDE_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double total_profit = swap_total;
+
+   for(int i = 0; i < ArraySize(entry_prices); ++i)
+   {
+      double position_profit = 0.0;
+      if(OrderCalcProfit(calc_type, _Symbol, entry_volumes[i], entry_prices[i], target_price, position_profit))
+         total_profit += position_profit;
+   }
+
+   return total_profit;
+}
+
+int CollectOpenPositionEntries(const TradeSide side, double &entry_prices[], double &entry_volumes[], double &swap_total)
+{
+   ArrayResize(entry_prices, 0);
+   ArrayResize(entry_volumes, 0);
+   swap_total = 0.0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!IsOurPosition())
+         continue;
+
+      ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      if(side == SIDE_BUY && type != POSITION_TYPE_BUY)
+         continue;
+      if(side == SIDE_SELL && type != POSITION_TYPE_SELL)
+         continue;
+
+      AddProjectedEntry(entry_prices, entry_volumes, PositionGetDouble(POSITION_PRICE_OPEN), PositionGetDouble(POSITION_VOLUME));
+      swap_total += PositionGetDouble(POSITION_SWAP);
+   }
+
+   return ArraySize(entry_prices);
+}
+
+PriceProjection EstimateTakeProfitPrice()
+{
+   PriceProjection projection;
+   projection.available = false;
+   projection.price = 0.0;
+
+   if(PositionsCount() <= 0)
+      return projection;
+
+   TradeSide side = ActiveCycleSide();
+   double entry_prices[];
+   double entry_volumes[];
+   double swap_total = 0.0;
+   if(CollectOpenPositionEntries(side, entry_prices, entry_volumes, swap_total) <= 0)
+      return projection;
+
+   MqlTick tick;
+   double current_price = SymbolInfoDouble(_Symbol, side == SIDE_BUY ? SYMBOL_BID : SYMBOL_ASK);
+   if(SymbolInfoTick(_Symbol, tick))
+      current_price = side == SIDE_BUY ? tick.bid : tick.ask;
+   if(current_price <= 0.0)
+      return projection;
+
+   double current_projection = ProjectedOpenPositionsProfit(side, entry_prices, entry_volumes, current_price, swap_total);
+   if(current_projection >= settings.take_profit_money)
+   {
+      projection.available = true;
+      projection.price = NormalizePrice(current_price);
+      return projection;
+   }
+
+   double step = MathMax(settings.grid_points * _Point, _Point * 10.0);
+   if(step <= 0.0)
+      return projection;
+
+   if(side == SIDE_BUY)
+   {
+      double lower = current_price;
+      double upper = current_price;
+      bool found = false;
+
+      for(int i = 0; i < 80; ++i)
+      {
+         upper += step;
+         if(ProjectedOpenPositionsProfit(side, entry_prices, entry_volumes, upper, swap_total) >= settings.take_profit_money)
+         {
+            found = true;
+            break;
+         }
+         step *= 2.0;
+      }
+
+      if(!found)
+         return projection;
+
+      for(int i = 0; i < 50; ++i)
+      {
+         double middle = (lower + upper) * 0.5;
+         if(ProjectedOpenPositionsProfit(side, entry_prices, entry_volumes, middle, swap_total) >= settings.take_profit_money)
+            upper = middle;
+         else
+            lower = middle;
+      }
+
+      projection.available = true;
+      projection.price = NormalizePrice(upper);
+      return projection;
+   }
+
+   double lower = current_price;
+   double upper = current_price;
+   bool found = false;
+
+   for(int i = 0; i < 80; ++i)
+   {
+      lower -= step;
+      if(lower <= 0.0)
+         break;
+      if(ProjectedOpenPositionsProfit(side, entry_prices, entry_volumes, lower, swap_total) >= settings.take_profit_money)
+      {
+         found = true;
+         break;
+      }
+      step *= 2.0;
+   }
+
+   if(!found)
+      return projection;
+
+   for(int i = 0; i < 50; ++i)
+   {
+      double middle = (lower + upper) * 0.5;
+      if(ProjectedOpenPositionsProfit(side, entry_prices, entry_volumes, middle, swap_total) >= settings.take_profit_money)
+         lower = middle;
+      else
+         upper = middle;
+   }
+
+   projection.available = true;
+   projection.price = NormalizePrice(lower);
+   return projection;
+}
+
+PriceProjection EstimateMaxLevelPrice()
+{
+   PriceProjection projection;
+   projection.available = false;
+   projection.price = 0.0;
+
+   if(!HasManagedCycle())
+      return projection;
+
+   TradeSide side = ActiveCycleSide();
+   double distance = settings.grid_points * _Point;
+   if(distance <= 0.0 || settings.max_levels <= 0)
+      return projection;
+
+   double entry_prices[];
+   double entry_volumes[];
+   CollectManagedProjectionEntries(side, entry_prices, entry_volumes);
+   if(ArraySize(entry_prices) <= 0)
+      return projection;
+
+   while(ArraySize(entry_prices) < settings.max_levels)
+   {
+      double extreme = ProjectionExtremePrice(entry_prices, side);
+      double next_entry = side == SIDE_BUY ? extreme - distance : extreme + distance;
+      AddProjectedEntry(entry_prices, entry_volumes, next_entry, settings.lots);
+   }
+
+   projection.available = true;
+   projection.price = NormalizePrice(ProjectionExtremePrice(entry_prices, side));
+   return projection;
+}
+
+void UpdatePriceMarkers(const PriceProjection &take_profit_projection, const PriceProjection &max_level_projection)
+{
+   if(take_profit_projection.available)
+      SetPriceMarker("TPPRICE", take_profit_projection.price, "TP panier", clrPaleGreen, STYLE_SOLID);
+   else
+      DeletePriceMarker("TPPRICE");
+
+   if(max_level_projection.available)
+      SetPriceMarker("MAXLEVELPRICE", max_level_projection.price, "Niveau max", clrOrange, STYLE_DASH);
+   else
+      DeletePriceMarker("MAXLEVELPRICE");
+}
+
 void UpdatePanel()
 {
    LoadSettingsFromPanel();
@@ -831,6 +1076,8 @@ void UpdatePanel()
    int positions = PositionsCount();
    int pendings = PendingOrdersCount();
    LossProjection loss_projection = BuildLossProjection();
+   PriceProjection take_profit_projection = EstimateTakeProfitPrice();
+   PriceProjection max_level_projection = EstimateMaxLevelPrice();
 
    ObjectSetString(0, ObjName("SIDE"), OBJPROP_TEXT, SideText(settings.side) + "  v");
    SetLabelText("SYMBOL", _Symbol);
@@ -843,6 +1090,9 @@ void UpdatePanel()
    SetLabelText("LOSSPRICE", loss_projection.target_price > 0.0 ? FormatPrice(loss_projection.target_price) : "-");
    SetLabelText("PROFIT", FormatMoney(profit), profit >= 0.0 ? clrPaleGreen : clrLightCoral);
    SetLabelText("COUNTS", IntegerToString(positions) + " / " + IntegerToString(pendings));
+   SetLabelText("TPPRICE", take_profit_projection.available ? FormatPrice(take_profit_projection.price) : "-");
+   SetLabelText("MAXLEVELPRICE", max_level_projection.available ? FormatPrice(max_level_projection.price) : "-");
+   UpdatePriceMarkers(take_profit_projection, max_level_projection);
 
    ChartRedraw(0);
 }
