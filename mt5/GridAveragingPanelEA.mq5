@@ -9,6 +9,7 @@
 #include <Trade/Trade.mqh>
 
 input long   InpMagicNumber        = 26052201;
+input string InpSettingsProfile    = "";
 input double InpLots               = 0.01;
 input int    InpGridDistancePoints = 1000;
 input int    InpPendingOrders      = 3;
@@ -55,6 +56,7 @@ struct LossProjection
 CTrade trade;
 
 const string PREFIX = "GA_PANEL_";
+const string SETTINGS_DIR = "GridAveragingPanelEA";
 const int PANEL_X = 10;
 const int PANEL_Y = 20;
 const int PANEL_W = 330;
@@ -109,6 +111,113 @@ int CurrentSpreadPoints()
 bool IsSpreadAllowed()
 {
    return CurrentSpreadPoints() <= settings.max_spread_points;
+}
+
+string SettingsProfileName()
+{
+   if(StringLen(InpSettingsProfile) > 0)
+      return InpSettingsProfile;
+   return _Symbol;
+}
+
+string SanitizeFilePart(const string value)
+{
+   string allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
+   string result = "";
+
+   for(int i = 0; i < StringLen(value); ++i)
+   {
+      string c = StringSubstr(value, i, 1);
+      result += StringFind(allowed, c) >= 0 ? c : "_";
+   }
+
+   return StringLen(result) > 0 ? result : "default";
+}
+
+string SettingsFileName()
+{
+   return SETTINGS_DIR + "\\settings_" + SanitizeFilePart(SettingsProfileName()) + "_magic_" + IntegerToString(InpMagicNumber) + ".ini";
+}
+
+double ParsePositiveDouble(const string value, const double fallback)
+{
+   string text = value;
+   StringReplace(text, ",", ".");
+   double parsed = StringToDouble(text);
+   return parsed > 0.0 ? parsed : fallback;
+}
+
+int ParseNonNegativeInt(const string value, const int fallback)
+{
+   long parsed = StringToInteger(value);
+   return parsed >= 0 ? (int)parsed : fallback;
+}
+
+bool SaveSettingsToFile()
+{
+   FolderCreate(SETTINGS_DIR, FILE_COMMON);
+
+   int handle = FileOpen(SettingsFileName(), FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+   {
+      Print("Impossible de sauvegarder les reglages: ", SettingsFileName(), " erreur ", GetLastError());
+      return false;
+   }
+
+   FileWrite(handle, "version=1");
+   FileWrite(handle, "profile=" + SettingsProfileName());
+   FileWrite(handle, "symbol=" + _Symbol);
+   FileWrite(handle, "magic=" + IntegerToString(InpMagicNumber));
+   FileWrite(handle, "side=" + IntegerToString((int)settings.side));
+   FileWrite(handle, "lots=" + DoubleToString(settings.lots, 8));
+   FileWrite(handle, "grid_points=" + IntegerToString(settings.grid_points));
+   FileWrite(handle, "pending_count=" + IntegerToString(settings.pending_count));
+   FileWrite(handle, "take_profit_money=" + DoubleToString(settings.take_profit_money, 2));
+   FileWrite(handle, "max_levels=" + IntegerToString(settings.max_levels));
+   FileWrite(handle, "max_slippage_points=" + IntegerToString(settings.max_slippage_points));
+   FileWrite(handle, "max_spread_points=" + IntegerToString(settings.max_spread_points));
+
+   FileClose(handle);
+   return true;
+}
+
+bool LoadSettingsFromFile()
+{
+   int handle = FileOpen(SettingsFileName(), FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(handle == INVALID_HANDLE)
+      return false;
+
+   while(!FileIsEnding(handle))
+   {
+      string line = FileReadString(handle);
+      int separator = StringFind(line, "=");
+      if(separator <= 0)
+         continue;
+
+      string key = StringSubstr(line, 0, separator);
+      string value = StringSubstr(line, separator + 1);
+
+      if(key == "side")
+         settings.side = StringToInteger(value) == SIDE_SELL ? SIDE_SELL : SIDE_BUY;
+      else if(key == "lots")
+         settings.lots = NormalizeVolume(ParsePositiveDouble(value, settings.lots));
+      else if(key == "grid_points")
+         settings.grid_points = MathMax(1, ParseNonNegativeInt(value, settings.grid_points));
+      else if(key == "pending_count")
+         settings.pending_count = ParseNonNegativeInt(value, settings.pending_count);
+      else if(key == "take_profit_money")
+         settings.take_profit_money = MathMax(0.01, ParsePositiveDouble(value, settings.take_profit_money));
+      else if(key == "max_levels")
+         settings.max_levels = MathMax(1, ParseNonNegativeInt(value, settings.max_levels));
+      else if(key == "max_slippage_points")
+         settings.max_slippage_points = ParseNonNegativeInt(value, settings.max_slippage_points);
+      else if(key == "max_spread_points")
+         settings.max_spread_points = ParseNonNegativeInt(value, settings.max_spread_points);
+   }
+
+   FileClose(handle);
+   Print("Reglages charges depuis ", SettingsFileName());
+   return true;
 }
 
 bool IsOurPosition()
@@ -890,6 +999,7 @@ void MaintainPendingGrid()
 void ExecuteCycle()
 {
    LoadSettingsFromPanel();
+   SaveSettingsToFile();
 
    if(HasManagedCycle())
    {
@@ -910,6 +1020,7 @@ void ExecuteCycle()
 void AddManualPosition()
 {
    LoadSettingsFromPanel();
+   SaveSettingsToFile();
    TradeSide side = HasManagedCycle() ? ActiveCycleSide() : settings.side;
    if(PositionsCount() >= settings.max_levels)
    {
@@ -991,6 +1102,7 @@ int OnInit()
    settings.max_levels = MathMax(1, InpMaxLevels);
    settings.max_slippage_points = MathMax(0, InpMaxSlippagePoints);
    settings.max_spread_points = MathMax(0, InpMaxSpreadPoints);
+   LoadSettingsFromFile();
 
    trade.SetExpertMagicNumber(InpMagicNumber);
    trade.SetDeviationInPoints(settings.max_slippage_points);
@@ -1013,6 +1125,9 @@ int OnInit()
 
 void OnDeinit(const int reason)
 {
+   if(ObjectFind(0, ObjName("EDIT_LOTS")) >= 0)
+      LoadSettingsFromPanel();
+   SaveSettingsToFile();
    EventKillTimer();
    if(atr_handle != INVALID_HANDLE)
       IndicatorRelease(atr_handle);
@@ -1047,6 +1162,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    if(id == CHARTEVENT_OBJECT_ENDEDIT)
    {
       LoadSettingsFromPanel();
+      SaveSettingsToFile();
       UpdatePanel();
       return;
    }
@@ -1072,6 +1188,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          DeleteSideDropdown();
          side_dropdown_open = false;
          ObjectSetString(0, ObjName("SIDE"), OBJPROP_TEXT, SideText(settings.side) + "  v");
+         SaveSettingsToFile();
          UpdatePanel();
       }
       return;
