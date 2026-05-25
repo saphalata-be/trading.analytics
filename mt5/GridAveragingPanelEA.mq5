@@ -28,9 +28,11 @@ input AtrStrategyMode InpAtrStrategyMode = ATR_STRATEGY_D1_50;
 
 enum TradeSide
 {
-   SIDE_BUY = 0,
-   SIDE_SELL = 1
+   SIDE_BUY = 0,  // Achat
+   SIDE_SELL = 1  // Vente
 };
+
+input TradeSide InpTradeSide = SIDE_BUY;
 
 struct PanelSettings
 {
@@ -981,7 +983,7 @@ void CheckTakeProfit()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   settings.side = SIDE_BUY;
+   settings.side = InpTradeSide == SIDE_SELL ? SIDE_SELL : SIDE_BUY;
    settings.lots = NormalizeVolume(InpLots);
    settings.grid_points = MathMax(1, InpGridDistancePoints);
    settings.pending_count = MathMax(0, InpPendingOrders);
