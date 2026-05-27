@@ -542,6 +542,20 @@ void CreateRow(const int row, const string label, const string value_id, const b
       CreateLabel(ObjName("VAL_" + value_id), PANEL_X + LABEL_W, y + 4, value, 9, clrWhite);
 }
 
+void CreateAtrPresetRow(const int row, const string label, const string value_id, const string value)
+{
+   int y = PANEL_Y + 42 + row * ROW_H;
+   int button_w = 26;
+   int gap = 4;
+   int edit_w = VALUE_W - 2 * button_w - 2 * gap;
+   int x = PANEL_X + LABEL_W;
+
+   CreateLabel(ObjName("LBL_" + value_id), PANEL_X + 12, y + 4, label);
+   CreateEdit(ObjName("EDIT_" + value_id), x, y, edit_w, ROW_H - 2, value);
+   CreateButton(ObjName(value_id + "_ATR1"), x + edit_w + gap, y, button_w, ROW_H - 2, "1", clrDarkSlateGray);
+   CreateButton(ObjName(value_id + "_ATR2"), x + edit_w + gap + button_w + gap, y, button_w, ROW_H - 2, "2", clrDarkSlateGray);
+}
+
 void SetLabelText(const string suffix, const string text, const color fg = clrWhite)
 {
    string name = ObjName("VAL_" + suffix);
@@ -669,9 +683,9 @@ void BuildPanel()
    CreateCombo(ObjName("SIDE"), PANEL_X + LABEL_W, direction_y, VALUE_W, ROW_H - 2, SideText(settings.side));
 
    CreateRow(7, "Lots", "LOTS", true, DoubleToString(settings.lots, 2));
-   CreateRow(8, "Distance grille", "GRID", true, IntegerToString(settings.grid_points));
+   CreateAtrPresetRow(8, "Distance grille", "GRID", IntegerToString(settings.grid_points));
    CreateRow(9, "Pending simultanes", "PENDING", true, IntegerToString(settings.pending_count));
-   CreateRow(10, "Take profit", "TP", true, DoubleToString(settings.take_profit_money, 2));
+   CreateAtrPresetRow(10, "Take profit", "TP", DoubleToString(settings.take_profit_money, 2));
    CreateRow(11, "Max niveaux", "MAXLEVELS", true, IntegerToString(settings.max_levels));
    CreateRow(12, "Perte max+1", "LOSSNEXT", false, "-");
    CreateRow(13, "Prix max+1", "LOSSPRICE", false, "-");
@@ -1097,6 +1111,45 @@ void UpdatePanel()
    ChartRedraw(0);
 }
 
+bool ApplyAtrPreset(const string value_id, const int multiplier)
+{
+   LoadSettingsFromPanel();
+
+   double atr_points = StrategyAtrPoints();
+   if(atr_points <= 0.0)
+   {
+      SetStatus("ATR strategie non disponible.", clrLightCoral);
+      return false;
+   }
+
+   if(value_id == "GRID")
+   {
+      settings.grid_points = (int)MathMax(1.0, MathRound(atr_points * multiplier));
+      ObjectSetString(0, ObjName("EDIT_GRID"), OBJPROP_TEXT, IntegerToString(settings.grid_points));
+      SetStatus("Distance grille = " + IntegerToString(settings.grid_points) + " pts (" + IntegerToString(multiplier) + " ATR).", clrPaleGreen);
+      SaveSettingsToFile();
+      return true;
+   }
+
+   if(value_id == "TP")
+   {
+      double atr_money = AtrMoneyValue(atr_points);
+      if(atr_money <= 0.0)
+      {
+         SetStatus("Valeur ATR non disponible.", clrLightCoral);
+         return false;
+      }
+
+      settings.take_profit_money = MathMax(0.01, atr_money * multiplier);
+      ObjectSetString(0, ObjName("EDIT_TP"), OBJPROP_TEXT, DoubleToString(settings.take_profit_money, 2));
+      SetStatus("Take profit = " + FormatMoney(settings.take_profit_money) + " " + AccountInfoString(ACCOUNT_CURRENCY) + " (" + IntegerToString(multiplier) + " ATR).", clrPaleGreen);
+      SaveSettingsToFile();
+      return true;
+   }
+
+   return false;
+}
+
 //+------------------------------------------------------------------+
 //| Trading actions                                                  |
 //+------------------------------------------------------------------+
@@ -1441,6 +1494,17 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          SaveSettingsToFile();
          UpdatePanel();
       }
+      return;
+   }
+
+   if(sparam == ObjName("GRID_ATR1") || sparam == ObjName("GRID_ATR2") || sparam == ObjName("TP_ATR1") || sparam == ObjName("TP_ATR2"))
+   {
+      string value_id = StringFind(sparam, ObjName("GRID_")) == 0 ? "GRID" : "TP";
+      int multiplier = StringFind(sparam, "ATR2") >= 0 ? 2 : 1;
+      if(ApplyAtrPreset(value_id, multiplier))
+         UpdatePanel();
+      else
+         ChartRedraw(0);
       return;
    }
 
