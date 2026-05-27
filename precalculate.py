@@ -696,7 +696,7 @@ def main() -> None:
         "--max-levels",
         nargs="+",
         type=int,
-        default=[6],
+        default=[6, 100],
         metavar="N",
         help="List of max_levels values to test (default: 6)",
     )
@@ -704,7 +704,7 @@ def main() -> None:
         "--tp-atr",
         nargs="+",
         type=float,
-        default=[1.0, 1.5, 2.0],
+        default=[1.0, 2.0],
         metavar="F",
         help="List of tp_atr values to test (default: 1.0 1.5 2.0)",
     )
@@ -712,7 +712,7 @@ def main() -> None:
         "--level-atr",
         nargs="+",
         type=float,
-        default=[1.0, 1.5, 2.0],
+        default=[1.0, 2.0],
         metavar="F",
         help="List of level_atr values to test (default: 1.0 1.5 2.0)",
     )
@@ -736,7 +736,7 @@ def main() -> None:
         "--initial-move-atr",
         nargs="+",
         type=float,
-        default=[1.0, 2.0, 3.0],
+        default=[2.0, 3.0],
         metavar="F",
         help="Initial adverse move in ATR for entry filter 1 (default: 2.0)",
     )

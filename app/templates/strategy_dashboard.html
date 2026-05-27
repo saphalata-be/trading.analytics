@@ -4,7 +4,7 @@
 {% block title %}Dashboard cache stratégie — Trading Analytics{% endblock %}
 
 {% block content %}
-<div class="mx-auto max-w-7xl space-y-8 p-6">
+<div class="mx-auto max-w-[120rem] space-y-8 p-6">
 
   <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
     <div class="space-y-2">
@@ -105,23 +105,64 @@
     </div>
   </div>
 
+  <div id="setup-comparison" class="rounded-2xl border border-gray-700 bg-gray-900 p-5">
+    <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+      <div>
+        <h2 class="text-lg font-semibold text-white">Comparaison risque multi-setup</h2>
+        <p class="mt-1 text-sm text-gray-500">
+          Sélectionne 2 à 5 combinaisons dans le classement pour comparer ce qui peut vraiment faire mal en grille.
+        </p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="comparison-count" class="rounded-full border border-gray-700 bg-gray-950 px-3 py-1 text-xs font-medium text-gray-400">0 sélection</span>
+        <button type="button"
+                id="comparison-clear"
+                class="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-500 hover:text-white">
+          Vider
+        </button>
+      </div>
+    </div>
+
+    <div id="comparison-empty" class="mt-4 rounded-xl border border-dashed border-gray-700 bg-gray-950/50 px-4 py-6 text-center text-sm text-gray-500">
+      Coche quelques setups dans le classement pour afficher la comparaison.
+    </div>
+
+    <div id="comparison-limit" class="mt-4 hidden rounded-xl border border-amber-700 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+      Maximum 5 setups pour garder une comparaison lisible.
+    </div>
+
+    <div id="comparison-table-wrap" class="mt-4 hidden max-h-[70vh] overflow-auto">
+      <table class="w-full min-w-[1240px] text-sm">
+        <thead id="comparison-head" class="sticky top-0 z-10 bg-gray-800/95 text-xs uppercase tracking-wide text-gray-500 backdrop-blur"></thead>
+        <tbody id="comparison-body" class="divide-y divide-gray-800"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="space-y-4">
     <div class="flex items-center justify-between gap-4">
       <div>
         <h2 class="text-lg font-semibold text-white">Classement des combinaisons</h2>
-        <p class="text-sm text-gray-500">Top 25 selon la métrique sélectionnée. Clique sur une ligne pour voir le détail instrument par instrument.</p>
+        <p class="text-sm text-gray-500">Toutes les combinaisons selon la métrique sélectionnée. Coche plusieurs lignes pour les comparer, ou clique sur Voir pour le détail instrument par instrument.</p>
+      </div>
+      <div class="shrink-0 rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs font-medium text-gray-400">
+        {{ leaderboard|length }} combinaisons
       </div>
     </div>
 
     <div class="overflow-hidden rounded-2xl border border-gray-700 bg-gray-900">
-      <div class="overflow-x-auto">
-        <table class="w-full min-w-[1080px] text-sm">
-          <thead class="bg-gray-800/70 text-xs uppercase tracking-wide text-gray-500">
+      <div class="max-h-[76vh] overflow-auto">
+        <table class="w-full min-w-[1520px] text-sm">
+          <thead class="sticky top-0 z-10 bg-gray-800/95 text-xs uppercase tracking-wide text-gray-500 backdrop-blur">
             <tr>
+              <th class="px-4 py-3 text-center font-medium">Comparer</th>
               <th class="px-4 py-3 text-left font-medium">Paramètres</th>
               <th class="px-4 py-3 text-left font-medium">Mode simulé</th>
+              <th class="px-4 py-3 text-right font-medium">Risque</th>
               <th class="px-4 py-3 text-right font-medium">Instruments</th>
               <th class="px-4 py-3 text-right font-medium">Cycles</th>
+              <th class="px-4 py-3 text-right font-medium">Stop max</th>
+              <th class="px-4 py-3 text-right font-medium">Perte max</th>
               <th class="px-4 py-3 text-right font-medium">Positifs</th>
               <th class="px-4 py-3 text-right font-medium">Réussite</th>
               <th class="px-4 py-3 text-right font-medium">Niv. moy.</th>
@@ -135,14 +176,29 @@
             {% for row in leaderboard %}
             {% set is_focus = focus_combo and row.max_levels == focus_combo.max_levels and row.tp_atr == focus_combo.tp_atr and row.level_atr == focus_combo.level_atr and row.atr_mode == focus_combo.atr_mode and row.direction_mode == focus_combo.direction_mode and row.entry_filter_id == focus_combo.entry_filter_id and row.initial_move_atr == focus_combo.initial_move_atr and row.initial_retrace_atr == focus_combo.initial_retrace_atr %}
             <tr class="{% if is_focus %}bg-cyan-950/30{% else %}hover:bg-gray-800/40{% endif %}">
+              <td class="px-4 py-3 text-center">
+                <input type="checkbox"
+                       class="js-compare-setup h-4 w-4 rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500"
+                       value="{{ row.combo_key }}"
+                       aria-label="Comparer cette combinaison">
+              </td>
               <td class="px-4 py-3">
                 <div class="font-medium text-white">ML {{ row.max_levels }} · TP {{ row.tp_atr }} · LA {{ row.level_atr }}</div>
                 <div class="text-xs text-cyan-400">{{ row.atr_mode_label }} · {{ row.entry_filter_label }}</div>
                 <div class="text-xs text-gray-500">MAJ {{ row.latest_computed_at.strftime('%d/%m/%Y %H:%M') }}</div>
               </td>
               <td class="px-4 py-3 text-sm text-gray-300">{{ row.direction_mode_label }}</td>
+              <td class="px-4 py-3 text-right font-mono font-semibold text-amber-300">
+                {% if row.risk_score is not none %}{{ '%.2f'|format(row.risk_score) }}{% else %}—{% endif %}
+              </td>
               <td class="px-4 py-3 text-right font-mono text-white">{{ row.instruments_count }}</td>
               <td class="px-4 py-3 text-right font-mono text-white">{{ row.direction_cycles }}</td>
+              <td class="px-4 py-3 text-right font-mono {% if row.max_levels_closed_share is not none and row.max_levels_closed_share > 10 %}text-red-400{% elif row.max_levels_closed_share is not none and row.max_levels_closed_share > 0 %}text-amber-300{% elif row.max_levels_closed_share is not none %}text-emerald-400{% else %}text-gray-500{% endif %}">
+                {% if row.max_levels_closed_share is not none %}{{ '%.1f'|format(row.max_levels_closed_share) }}%{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-right font-mono text-red-300">
+                {{ '%.1f'|format(row.max_loss_per_cycle_atr) }}
+              </td>
               <td class="px-4 py-3 text-right font-mono {% if row.positive_share is not none and row.positive_share >= 50 %}text-emerald-400{% elif row.positive_share is not none %}text-red-400{% else %}text-gray-500{% endif %}">
                 {% if row.positive_share is not none %}{{ '%.1f'|format(row.positive_share) }}%{% else %}—{% endif %}
               </td>
@@ -411,6 +467,15 @@
   const levelReachSubtitle = document.getElementById('level-reach-subtitle');
   const levelReachBody = document.getElementById('level-reach-body');
   const levelReachClose = document.getElementById('level-reach-close');
+  const comparisonSetups = {{ comparison_setups|tojson }};
+  const comparisonById = new Map(comparisonSetups.map((setup) => [setup.id, setup]));
+  const comparisonCount = document.getElementById('comparison-count');
+  const comparisonClear = document.getElementById('comparison-clear');
+  const comparisonEmpty = document.getElementById('comparison-empty');
+  const comparisonLimit = document.getElementById('comparison-limit');
+  const comparisonTableWrap = document.getElementById('comparison-table-wrap');
+  const comparisonHead = document.getElementById('comparison-head');
+  const comparisonBody = document.getElementById('comparison-body');
 
   function escapeHtml(value) {
     return String(value)
@@ -419,6 +484,228 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function formatNumber(value, digits = 2, suffix = '') {
+    if (value === null || value === undefined || value === '') {
+      return '—';
+    }
+    const num = Number(value);
+    if (Number.isNaN(num)) {
+      return '—';
+    }
+    return `${num.toFixed(digits)}${suffix}`;
+  }
+
+  function formatPercent(value, digits = 1) {
+    return formatNumber(value, digits, '%');
+  }
+
+  function formatAtr(value, digits = 1) {
+    const formatted = formatNumber(value, digits);
+    return formatted === '—' ? formatted : `${formatted} ATR`;
+  }
+
+  function formatDuration(value) {
+    if (value === null || value === undefined || value === '') {
+      return '—';
+    }
+    const totalMinutes = Number(value);
+    if (Number.isNaN(totalMinutes)) {
+      return '—';
+    }
+    const total = Math.max(0, Math.round(totalMinutes));
+    const days = Math.floor(total / 1440);
+    const hours = Math.floor((total % 1440) / 60);
+    const minutes = total % 60;
+    const parts = [];
+    if (days) {
+      parts.push(`${days}j`);
+    }
+    if (hours) {
+      parts.push(`${hours}h`);
+    }
+    if (minutes || !parts.length) {
+      parts.push(`${minutes}m`);
+    }
+    return parts.join(' ');
+  }
+
+  function profitClass(value) {
+    if (value === null || value === undefined || value === '') {
+      return 'text-gray-500';
+    }
+    return Number(value) >= 0 ? 'text-emerald-400' : 'text-red-400';
+  }
+
+  function riskShareClass(value) {
+    if (value === null || value === undefined || value === '') {
+      return 'text-gray-500';
+    }
+    const num = Number(value);
+    if (num === 0) {
+      return 'text-emerald-400';
+    }
+    return num > 10 ? 'text-red-400' : 'text-amber-300';
+  }
+
+  function comparisonMetricRows() {
+    return [
+      {
+        label: 'Score risque',
+        hint: 'Plus bas = moins de pression perte/niveaux/ouvertures',
+        value: (setup) => formatNumber(setup.risk_score, 2),
+        className: () => 'text-amber-300'
+      },
+      {
+        label: 'Cycles stoppés au max',
+        hint: 'Fréquence des pertes de grille clôturées au niveau max',
+        value: (setup) => `${formatPercent(setup.max_levels_closed_share)} (${setup.max_levels_closed || 0})`,
+        className: (setup) => riskShareClass(setup.max_levels_closed_share)
+      },
+      {
+        label: 'Perte max théorique / cycle',
+        hint: 'Somme ATR perdue si le cycle atteint le cap',
+        value: (setup) => formatAtr(setup.max_loss_per_cycle_atr),
+        className: () => 'text-red-300'
+      },
+      {
+        label: 'Pression perte clôturée',
+        hint: 'Perte max pondérée par les cycles clôturés au max',
+        value: (setup) => formatAtr(setup.closed_loss_pressure, 2),
+        className: () => 'text-amber-300'
+      },
+      {
+        label: 'Instruments négatifs',
+        hint: 'Part des instruments dont le profit total est négatif',
+        value: (setup) => `${formatPercent(setup.negative_share)} (${setup.negative_instruments || 0})`,
+        className: (setup) => riskShareClass(setup.negative_share)
+      },
+      {
+        label: 'Pire instrument',
+        hint: 'Résultat du moins bon instrument du setup',
+        value: (setup) => formatAtr(setup.worst_profit_atr),
+        className: (setup) => profitClass(setup.worst_profit_atr)
+      },
+      {
+        label: 'P25 profit/instrument',
+        hint: 'Seuil bas: 25% des instruments font moins bien',
+        value: (setup) => formatAtr(setup.p25_profit_atr),
+        className: (setup) => profitClass(setup.p25_profit_atr)
+      },
+      {
+        label: 'Médiane profit/instrument',
+        hint: 'Résultat central, moins sensible aux gros gagnants',
+        value: (setup) => formatAtr(setup.median_profit_atr),
+        className: (setup) => profitClass(setup.median_profit_atr)
+      },
+      {
+        label: 'Niveaux moyens',
+        hint: 'Exposition moyenne de la grille',
+        value: (setup) => formatNumber(setup.avg_levels_all, 2),
+        className: () => 'text-cyan-300'
+      },
+      {
+        label: 'Durée moyenne',
+        hint: 'Temps moyen pendant lequel le cycle reste exposé',
+        value: (setup) => formatDuration(setup.avg_duration_all),
+        className: () => 'text-cyan-300'
+      },
+      {
+        label: 'Cycles ouverts',
+        hint: 'Cycles non clôturés en fin de données',
+        value: (setup) => `${formatPercent(setup.incomplete_share)} (${setup.incomplete || 0})`,
+        className: (setup) => riskShareClass(setup.incomplete_share)
+      },
+      {
+        label: 'Profit total',
+        hint: 'Utile, mais secondaire pour cette comparaison risque',
+        value: (setup) => formatAtr(setup.total_profit_atr),
+        className: (setup) => profitClass(setup.total_profit_atr)
+      }
+    ];
+  }
+
+  function selectedComparisonSetups() {
+    return Array.from(document.querySelectorAll('.js-compare-setup:checked'))
+      .map((checkbox) => comparisonById.get(checkbox.value))
+      .filter(Boolean);
+  }
+
+  function renderComparison() {
+    if (!comparisonHead || !comparisonBody || !comparisonTableWrap || !comparisonEmpty || !comparisonCount) {
+      return;
+    }
+
+    const selected = selectedComparisonSetups();
+    comparisonCount.textContent = `${selected.length} sélection${selected.length > 1 ? 's' : ''}`;
+    comparisonEmpty.classList.toggle('hidden', selected.length > 0);
+    comparisonTableWrap.classList.toggle('hidden', selected.length === 0);
+
+    if (!selected.length) {
+      comparisonHead.innerHTML = '';
+      comparisonBody.innerHTML = '';
+      return;
+    }
+
+    comparisonHead.innerHTML = `
+      <tr>
+        <th class="px-4 py-3 text-left font-medium">Métrique</th>
+        ${selected.map((setup) => `
+          <th class="px-4 py-3 text-left align-top font-medium normal-case tracking-normal">
+            <div class="text-sm text-white">#${escapeHtml(setup.rank)} · ${escapeHtml(setup.params)}</div>
+            <div class="mt-1 max-w-[16rem] text-xs font-normal text-gray-500">${escapeHtml(setup.details)}</div>
+            <div class="mt-1 text-xs font-normal text-gray-500">${escapeHtml(setup.instruments_count)} instruments · ${escapeHtml(setup.direction_cycles)} cycles</div>
+          </th>
+        `).join('')}
+      </tr>`;
+
+    comparisonBody.innerHTML = comparisonMetricRows().map((metric) => `
+      <tr>
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-200">${escapeHtml(metric.label)}</div>
+          <div class="mt-0.5 text-xs text-gray-500">${escapeHtml(metric.hint)}</div>
+        </td>
+        ${selected.map((setup) => `
+          <td class="px-4 py-3 text-right align-middle font-mono font-semibold ${metric.className(setup)}">
+            ${escapeHtml(metric.value(setup))}
+          </td>
+        `).join('')}
+      </tr>
+    `).join('');
+  }
+
+  document.addEventListener('change', function(event) {
+    const checkbox = event.target.closest('.js-compare-setup');
+    if (!checkbox) {
+      return;
+    }
+
+    const checked = document.querySelectorAll('.js-compare-setup:checked');
+    if (checked.length > 5) {
+      checkbox.checked = false;
+      if (comparisonLimit) {
+        comparisonLimit.classList.remove('hidden');
+      }
+      return;
+    }
+
+    if (comparisonLimit) {
+      comparisonLimit.classList.add('hidden');
+    }
+    renderComparison();
+  });
+
+  if (comparisonClear) {
+    comparisonClear.addEventListener('click', function() {
+      document.querySelectorAll('.js-compare-setup:checked').forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+      if (comparisonLimit) {
+        comparisonLimit.classList.add('hidden');
+      }
+      renderComparison();
+    });
   }
 
   function closeLevelReachModal() {

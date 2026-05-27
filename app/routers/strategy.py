@@ -91,6 +91,13 @@ _DASHBOARD_METRICS = [
         "ascending": True,
         "suffix": "levels",
     },
+    {
+        "value": "risk_score",
+        "label": "Risque estimé",
+        "field": "risk_score",
+        "ascending": True,
+        "suffix": "risk",
+    },
 ]
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
@@ -653,6 +660,25 @@ def _dashboard_is_better(candidate: Optional[float], current: Optional[float], a
     return candidate < current if ascending else candidate > current
 
 
+def _dashboard_percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+
+    position = (len(ordered) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[int(position)]
+
+    lower_value = ordered[lower]
+    upper_value = ordered[upper]
+    return lower_value + (upper_value - lower_value) * (position - lower)
+
+
 def _dashboard_combo_matches(
     row: dict,
     focus_max_levels: int | None,
@@ -847,6 +873,7 @@ def _build_strategy_dashboard(
                 "entry_filter_label": entry["entry_filter_label"],
                 "direction_mode": entry["direction_mode"],
                 "direction_mode_label": entry["direction_mode_label"],
+                "combo_key": entry["combo_key"],
                 "instruments_count": 0,
                 "direction_cycles": 0,
                 "overall_cycles": 0,
@@ -857,6 +884,7 @@ def _build_strategy_dashboard(
                 "negative_instruments": 0,
                 "neutral_instruments": 0,
                 "total_profit_atr": 0.0,
+                "profit_values": [],
                 "profit_count": 0,
                 "avg_levels_num": 0.0,
                 "avg_levels_den": 0,
@@ -875,6 +903,7 @@ def _build_strategy_dashboard(
         total_profit = stats.get("total_profit_atr")
         if total_profit is not None:
             combo["total_profit_atr"] += total_profit
+            combo["profit_values"].append(total_profit)
             combo["profit_count"] += 1
             if total_profit > 0:
                 combo["positive_instruments"] += 1
@@ -895,29 +924,74 @@ def _build_strategy_dashboard(
     leaderboard: list[dict] = []
     for combo in combo_map.values():
         closed_total = combo["completed"] + combo["max_levels_closed"]
+        avg_levels_all = (
+            combo["avg_levels_num"] / combo["avg_levels_den"]
+            if combo["avg_levels_den"]
+            else None
+        )
+        avg_duration_all = (
+            combo["avg_duration_num"] / combo["avg_duration_den"]
+            if combo["avg_duration_den"]
+            else None
+        )
+        positive_share = (
+            combo["positive_instruments"] / combo["profit_count"] * 100
+            if combo["profit_count"]
+            else None
+        )
+        negative_share = (
+            combo["negative_instruments"] / combo["profit_count"] * 100
+            if combo["profit_count"]
+            else None
+        )
+        max_levels_closed_share = (
+            combo["max_levels_closed"] / closed_total * 100
+            if closed_total
+            else None
+        )
+        incomplete_share = (
+            combo["incomplete"] / combo["direction_cycles"] * 100
+            if combo["direction_cycles"]
+            else None
+        )
+        max_loss_per_cycle_atr = combo["level_atr"] * combo["max_levels"] * (combo["max_levels"] + 1) / 2
+        closed_loss_pressure = (
+            max_loss_per_cycle_atr * combo["max_levels_closed"] / closed_total
+            if closed_total
+            else None
+        )
+        risk_parts = [
+            closed_loss_pressure,
+            avg_levels_all,
+            (negative_share / 25) if negative_share is not None else None,
+            (incomplete_share / 50) if incomplete_share is not None else None,
+        ]
+        risk_score = (
+            sum(value for value in risk_parts if value is not None)
+            if any(value is not None for value in risk_parts)
+            else None
+        )
         row = {
             **combo,
             "success_rate": (combo["completed"] / closed_total * 100) if closed_total else None,
-            "avg_levels_all": (
-                combo["avg_levels_num"] / combo["avg_levels_den"]
-                if combo["avg_levels_den"]
-                else None
-            ),
-            "avg_duration_all": (
-                combo["avg_duration_num"] / combo["avg_duration_den"]
-                if combo["avg_duration_den"]
-                else None
-            ),
+            "closed_total": closed_total,
+            "max_levels_closed_share": max_levels_closed_share,
+            "incomplete_share": incomplete_share,
+            "max_loss_per_cycle_atr": max_loss_per_cycle_atr,
+            "closed_loss_pressure": closed_loss_pressure,
+            "risk_score": risk_score,
+            "avg_levels_all": avg_levels_all,
+            "avg_duration_all": avg_duration_all,
             "avg_profit_per_instrument": (
                 combo["total_profit_atr"] / combo["profit_count"]
                 if combo["profit_count"]
                 else None
             ),
-            "positive_share": (
-                combo["positive_instruments"] / combo["profit_count"] * 100
-                if combo["profit_count"]
-                else None
-            ),
+            "positive_share": positive_share,
+            "negative_share": negative_share,
+            "worst_profit_atr": min(combo["profit_values"]) if combo["profit_values"] else None,
+            "median_profit_atr": _dashboard_percentile(combo["profit_values"], 0.5),
+            "p25_profit_atr": _dashboard_percentile(combo["profit_values"], 0.25),
         }
         row[metric_spec["field"]] = row.get(metric_spec["field"])
         leaderboard.append(row)
@@ -981,6 +1055,39 @@ def _build_strategy_dashboard(
         metric_spec["field"],
         metric_spec["ascending"],
     )
+    comparison_setups = [
+        {
+            "id": row["combo_key"],
+            "rank": index,
+            "params": f"ML {row['max_levels']} - TP {row['tp_atr']} - LA {row['level_atr']}",
+            "details": f"{row['atr_mode_label']} - {row['entry_filter_label']} - {row['direction_mode_label']}",
+            "instruments_count": row["instruments_count"],
+            "direction_cycles": row["direction_cycles"],
+            "closed_total": row["closed_total"],
+            "completed": row["completed"],
+            "max_levels_closed": row["max_levels_closed"],
+            "incomplete": row["incomplete"],
+            "success_rate": row["success_rate"],
+            "max_levels_closed_share": row["max_levels_closed_share"],
+            "incomplete_share": row["incomplete_share"],
+            "max_loss_per_cycle_atr": row["max_loss_per_cycle_atr"],
+            "closed_loss_pressure": row["closed_loss_pressure"],
+            "risk_score": row["risk_score"],
+            "avg_levels_all": row["avg_levels_all"],
+            "avg_duration_all": row["avg_duration_all"],
+            "total_profit_atr": row["total_profit_atr"],
+            "avg_profit_per_instrument": row["avg_profit_per_instrument"],
+            "positive_instruments": row["positive_instruments"],
+            "negative_instruments": row["negative_instruments"],
+            "neutral_instruments": row["neutral_instruments"],
+            "positive_share": row["positive_share"],
+            "negative_share": row["negative_share"],
+            "worst_profit_atr": row["worst_profit_atr"],
+            "median_profit_atr": row["median_profit_atr"],
+            "p25_profit_atr": row["p25_profit_atr"],
+        }
+        for index, row in enumerate(leaderboard, start=1)
+    ]
 
     return {
         "direction": direction,
@@ -1007,7 +1114,8 @@ def _build_strategy_dashboard(
                 for value in sorted({entry["direction_mode"] for entry in entries})
             ],
         },
-        "leaderboard": leaderboard[:25],
+        "leaderboard": leaderboard,
+        "comparison_setups": comparison_setups,
         "focus_combo": focus_combo,
         "focus_instruments": focus_instruments,
         "instrument_best": instrument_best[:40],
