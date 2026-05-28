@@ -15,7 +15,12 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import HISTORY_FILES_EXCHANGE, HISTORY_FILES_PATH
 from app.database import get_cache_connection, get_connection
-from app.services.history_files import HistoryFilesError, import_history_files, scan_history_files
+from app.services.history_files import (
+    HistoryFilesError,
+    import_history_files,
+    load_ic_markets_symbol_names,
+    scan_history_files,
+)
 from app.trade_direction import TRADE_DIRECTION_OPTIONS, normalize_trade_direction, trade_direction_label
 
 router = APIRouter(prefix="/data", tags=["data"])
@@ -28,20 +33,29 @@ async def data_page(request: Request):
 
 
 @router.post("/sync", response_class=HTMLResponse)
-async def sync_data(request: Request):
+async def sync_data(request: Request, update_mode: bool = Form(False)):
     try:
-        summary = await run_in_threadpool(import_history_files)
+        summary = await run_in_threadpool(import_history_files, update_mode=update_mode)
     except HistoryFilesError as exc:
         context = _build_context(request, error=str(exc))
     except Exception as exc:
         context = _build_context(request, error=f"Import impossible: {exc}")
     else:
+        import_label = "Mise à jour terminée" if summary.update_mode else "Import terminé"
+        skipped_label = ""
+        if summary.skipped_symbols:
+            skipped_label = (
+                f" {len(summary.skipped_symbols)} symbole(s) ignoré(s) car absents d'IC Markets: "
+                f"{', '.join(summary.skipped_symbols)}."
+            )
+        rows_label = f"{summary.rows:,}".replace(",", " ")
         context = _build_context(
             request,
             message=(
-                f"Import terminé: {summary.instruments} instruments, "
-                f"{summary.timeframes} fichiers, {summary.rows:,} barres."
-            ).replace(",", " "),
+                f"{import_label}: {summary.instruments} instruments, "
+                f"{summary.timeframes} fichiers, {rows_label} barres."
+                f"{skipped_label}"
+            ),
         )
 
     return templates.TemplateResponse("data_management.html", context)
@@ -119,7 +133,29 @@ def _build_context(request: Request, message: str = "", error: str = "") -> dict
         available_files = []
         source_error = str(exc)
 
+    try:
+        ic_markets_symbols = load_ic_markets_symbol_names()
+    except Exception:  # noqa: BLE001
+        ic_markets_symbols = set()
+
     available_symbols = sorted({item.symbol for item in available_files})
+    ic_markets_symbols_loaded = bool(ic_markets_symbols)
+    available_symbol_statuses = [
+        {
+            "symbol": symbol,
+            "exists_in_ic_markets": (
+                symbol in ic_markets_symbols
+                if ic_markets_symbols_loaded
+                else None
+            ),
+        }
+        for symbol in available_symbols
+    ]
+    unavailable_symbols = [
+        item["symbol"]
+        for item in available_symbol_statuses
+        if item["exists_in_ic_markets"] is False
+    ]
     available_timeframes = sorted(
         {item.timeframe for item in available_files},
         key=lambda item: {"1min": 0, "1h": 1, "1day": 2}.get(item, 99),
@@ -132,6 +168,9 @@ def _build_context(request: Request, message: str = "", error: str = "") -> dict
         "source_exchange": HISTORY_FILES_EXCHANGE,
         "available_files_count": len(available_files),
         "available_instruments_count": len(available_symbols),
+        "available_symbol_statuses": available_symbol_statuses,
+        "unavailable_symbols_count": len(unavailable_symbols),
+        "ic_markets_symbols_loaded": ic_markets_symbols_loaded,
         "available_timeframes": available_timeframes,
         "db_summary": db_summary,
         "trade_direction_options": TRADE_DIRECTION_OPTIONS,

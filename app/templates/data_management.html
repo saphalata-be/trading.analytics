@@ -8,27 +8,53 @@
 
   <div>
     <h1 class="text-2xl font-bold text-white">Gestion des données</h1>
-    <p class="text-gray-400 text-sm mt-1">Import complet depuis les fichiers TickStory, sans sélection manuelle d'instruments.</p>
+    <p class="text-gray-400 text-sm mt-1">Import depuis les fichiers TickStory, avec validation des symboles IC Markets.</p>
   </div>
 
   <div class="bg-gray-900 border border-gray-700 rounded-xl p-5 space-y-4">
     <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
       <div class="space-y-2">
         <h2 class="text-base font-semibold text-gray-200">Source TickStory</h2>
-        <p class="text-sm text-gray-400">Tous les fichiers nommés <span class="font-mono text-gray-300">&lt;symbole&gt;_&lt;timeframe&gt;.csv</span> sont importés dans la base.</p>
+        <p class="text-sm text-gray-400">Tous les fichiers nommés <span class="font-mono text-gray-300">&lt;symbole&gt;_&lt;timeframe&gt;.csv</span> sont analysés; seuls les symboles présents chez IC Markets sont importés.</p>
         <div class="text-xs text-gray-500 space-y-1">
           <div>Répertoire: <span class="font-mono text-gray-300">{{ source_path }}</span></div>
           <div>Exchange interne: <span class="font-mono text-gray-300">{{ source_exchange }}</span></div>
           <div>Fichiers détectés: <span class="font-mono text-gray-300">{{ available_files_count }}</span> · Instruments: <span class="font-mono text-gray-300">{{ available_instruments_count }}</span> · Timeframes: <span class="font-mono text-gray-300">{{ available_timeframes|join(', ') if available_timeframes else '—' }}</span></div>
+          {% if not ic_markets_symbols_loaded %}
+          <div class="text-amber-300">Validation IC Markets indisponible: actualisez la liste des symboles dans l'onglet IC Markets avant d'importer.</div>
+          {% elif unavailable_symbols_count %}
+          <div class="text-red-300">{{ unavailable_symbols_count }} instrument(s) du dossier absent(s) d'IC Markets.</div>
+          {% endif %}
         </div>
+
+        {% if available_symbol_statuses %}
+        <div class="flex max-w-3xl flex-wrap gap-2 pt-2">
+          {% for item in available_symbol_statuses %}
+          <span class="rounded border px-2 py-1 font-mono text-xs
+            {% if item.exists_in_ic_markets is sameas false %}border-red-700 bg-red-950/40 text-red-300
+            {% elif item.exists_in_ic_markets is sameas true %}border-emerald-800 bg-emerald-950/30 text-emerald-300
+            {% else %}border-gray-700 bg-gray-950/60 text-gray-400{% endif %}">
+            {{ item.symbol }}
+          </span>
+          {% endfor %}
+        </div>
+        {% endif %}
       </div>
 
       <form method="post" action="/data/sync" class="flex flex-col gap-2 min-w-72">
+        <label class="flex items-start gap-3 rounded-lg border border-gray-800 bg-gray-950/60 p-3 text-sm text-gray-300">
+          <input type="checkbox" name="update_mode" value="true"
+                 class="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-800 text-indigo-600 focus:ring-indigo-500">
+          <span>
+            <span class="block font-medium text-gray-200">Mettre à jour seulement</span>
+            <span class="mt-1 block text-xs text-gray-500">Supprime puis réimporte uniquement les symboles présents dans le répertoire; les autres instruments déjà en base restent inchangés.</span>
+          </span>
+        </label>
         <button type="submit"
                 class="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500">
-          Réimporter toute la base
+          Lancer l'import
         </button>
-        <p class="text-xs text-amber-300">Cette action vide les tables de marché et invalide le cache de stratégie avant de recharger tous les CSV détectés.</p>
+        <p class="text-xs text-amber-300">Sans l'option de mise à jour, les tables de marché sont vidées et le cache de stratégie est invalidé avant le rechargement.</p>
       </form>
     </div>
 

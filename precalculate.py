@@ -728,7 +728,7 @@ def main() -> None:
         "--entry-filter",
         nargs="+",
         type=int,
-        default=[0, 1, 2],
+        default=[0],
         metavar="N",
         help="Entry filters to test: 0=no filter, 1=initial ATR move, 2=ADX range filter (default: 0 1 2)",
     )
