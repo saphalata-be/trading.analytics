@@ -17,6 +17,7 @@ input double InpTakeProfitMoney    = 10.0;
 input int    InpMaxLevels          = 8;
 input int    InpMaxSlippagePoints  = 20;
 input int    InpMaxSpreadPoints    = 50;
+input bool   InpAutoCycle          = false;
 
 enum AtrStrategyMode
 {
@@ -45,6 +46,7 @@ struct PanelSettings
    int max_levels;
    int max_slippage_points;
    int max_spread_points;
+   bool auto_cycle;
 };
 
 struct LossProjection
@@ -182,6 +184,7 @@ bool SaveSettingsToFile()
    FileWrite(handle, "max_levels=" + IntegerToString(settings.max_levels));
    FileWrite(handle, "max_slippage_points=" + IntegerToString(settings.max_slippage_points));
    FileWrite(handle, "max_spread_points=" + IntegerToString(settings.max_spread_points));
+   FileWrite(handle, "auto_cycle=" + IntegerToString(settings.auto_cycle ? 1 : 0));
 
    FileClose(handle);
    return true;
@@ -219,6 +222,8 @@ bool LoadSettingsFromFile()
          settings.max_slippage_points = ParseNonNegativeInt(value, settings.max_slippage_points);
       else if(key == "max_spread_points")
          settings.max_spread_points = ParseNonNegativeInt(value, settings.max_spread_points);
+      else if(key == "auto_cycle")
+         settings.auto_cycle = StringToInteger(value) != 0;
    }
 
    FileClose(handle);
@@ -504,6 +509,26 @@ void CreateCombo(const string name, const int x, const int y, const int w, const
    CreateButton(name, x, y, w, h, value + "  v", clrDarkSlateGray);
 }
 
+string AutoCycleText()
+{
+   return settings.auto_cycle ? "Oui" : "Non";
+}
+
+color AutoCycleColor()
+{
+   return settings.auto_cycle ? clrSeaGreen : clrDarkSlateGray;
+}
+
+void UpdateAutoCycleButton()
+{
+   string name = ObjName("AUTOCYCLE");
+   if(ObjectFind(0, name) >= 0)
+   {
+      ObjectSetString(0, name, OBJPROP_TEXT, AutoCycleText());
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, AutoCycleColor());
+   }
+}
+
 void CreateSideDropdown()
 {
    int direction_y = PANEL_Y + 42 + 6 * ROW_H;
@@ -554,6 +579,13 @@ void CreateAtrPresetRow(const int row, const string label, const string value_id
    CreateEdit(ObjName("EDIT_" + value_id), x, y, edit_w, ROW_H - 2, value);
    CreateButton(ObjName(value_id + "_ATR1"), x + edit_w + gap, y, button_w, ROW_H - 2, "1", clrDarkSlateGray);
    CreateButton(ObjName(value_id + "_ATR2"), x + edit_w + gap + button_w + gap, y, button_w, ROW_H - 2, "2", clrDarkSlateGray);
+}
+
+void CreateToggleRow(const int row, const string label, const string value_id, const string value, const color bg)
+{
+   int y = PANEL_Y + 42 + row * ROW_H;
+   CreateLabel(ObjName("LBL_" + value_id), PANEL_X + 12, y + 4, label);
+   CreateButton(ObjName(value_id), PANEL_X + LABEL_W, y, VALUE_W, ROW_H - 2, value, bg);
 }
 
 void SetLabelText(const string suffix, const string text, const color fg = clrWhite)
@@ -666,7 +698,7 @@ void SetStatus(const string text, const color fg = clrLightSkyBlue)
 
 void BuildPanel()
 {
-   int panel_h = 42 + 21 * ROW_H + 80;
+   int panel_h = 42 + 22 * ROW_H + 80;
    CreateRect(ObjName("BG"), PANEL_X, PANEL_Y, PANEL_W, panel_h, (color)0x181818);
    CreateLabel(ObjName("TITLE"), PANEL_X + 12, PANEL_Y + 10, "Grid Averaging EA", 11, clrWhite);
    CreateLabel(ObjName("MAGIC"), PANEL_X + 185, PANEL_Y + 12, "Magic " + IntegerToString(InpMagicNumber), 8, clrSilver);
@@ -695,8 +727,9 @@ void BuildPanel()
    CreateRow(17, "Positions / pendings", "COUNTS", false, "-");
    CreateRow(18, "Prix TP panier", "TPPRICE", false, "-");
    CreateRow(19, "Prix niveau max", "MAXLEVELPRICE", false, "-");
+   CreateToggleRow(20, "Auto cycle", "AUTOCYCLE", AutoCycleText(), AutoCycleColor());
 
-   int button_y = PANEL_Y + 42 + 20 * ROW_H + 8;
+   int button_y = PANEL_Y + 42 + 21 * ROW_H + 8;
    CreateButton(ObjName("EXECUTE"), PANEL_X + 12, button_y, 96, 26, "Executer", clrSeaGreen);
    CreateButton(ObjName("ADD"), PANEL_X + 118, button_y, 96, 26, "Ajouter", clrSteelBlue);
    CreateButton(ObjName("CLOSE"), PANEL_X + 224, button_y, 88, 26, "Close all", clrFireBrick);
@@ -1106,6 +1139,7 @@ void UpdatePanel()
    SetLabelText("COUNTS", IntegerToString(positions) + " / " + IntegerToString(pendings));
    SetLabelText("TPPRICE", take_profit_projection.available ? FormatPrice(take_profit_projection.price) : "-");
    SetLabelText("MAXLEVELPRICE", max_level_projection.available ? FormatPrice(max_level_projection.price) : "-");
+   UpdateAutoCycleButton();
    UpdatePriceMarkers(take_profit_projection, max_level_projection);
 
    ChartRedraw(0);
@@ -1338,10 +1372,10 @@ void AddManualPosition()
    }
 }
 
-void CloseAllManaged()
+bool CloseAllManaged()
 {
    if(!PrepareTradeContext())
-      return;
+      return false;
 
    bool ok = true;
 
@@ -1375,8 +1409,15 @@ void CloseAllManaged()
       }
    }
 
-   if(ok)
+   if(ok && !HasManagedCycle())
+   {
       SetStatus("Cycle cloture.", clrPaleGreen);
+      return true;
+   }
+
+   if(ok)
+      SetStatus("Cloture demandee, cycle encore actif.", clrLightCoral);
+   return false;
 }
 
 void CheckTakeProfit()
@@ -1388,7 +1429,12 @@ void CheckTakeProfit()
    if(profit >= settings.take_profit_money)
    {
       SetStatus("TP global atteint: " + FormatMoney(profit), clrPaleGreen);
-      CloseAllManaged();
+      bool closed = CloseAllManaged();
+      if(closed && settings.auto_cycle)
+      {
+         SetStatus("TP atteint, relance automatique du cycle.", clrPaleGreen);
+         ExecuteCycle();
+      }
    }
 }
 
@@ -1405,6 +1451,7 @@ int OnInit()
    settings.max_levels = MathMax(1, InpMaxLevels);
    settings.max_slippage_points = MathMax(0, InpMaxSlippagePoints);
    settings.max_spread_points = MathMax(0, InpMaxSpreadPoints);
+   settings.auto_cycle = InpAutoCycle;
    LoadSettingsFromFile();
 
    trade.SetExpertMagicNumber(InpMagicNumber);
@@ -1512,6 +1559,16 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    {
       ExecuteCycle();
       UpdatePanel();
+      return;
+   }
+
+   if(sparam == ObjName("AUTOCYCLE"))
+   {
+      settings.auto_cycle = !settings.auto_cycle;
+      SaveSettingsToFile();
+      UpdateAutoCycleButton();
+      SetStatus(settings.auto_cycle ? "Auto cycle active." : "Auto cycle desactive.", clrLightSkyBlue);
+      ChartRedraw(0);
       return;
    }
 
