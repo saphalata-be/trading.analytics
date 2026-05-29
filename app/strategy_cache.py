@@ -9,7 +9,7 @@ from app.strategy_filters import (
 from app.strategy_atr import DEFAULT_ATR_MODE, atr_mode_label, normalize_atr_mode
 from app.trade_direction import normalize_trade_direction
 
-STRATEGY_CACHE_VERSION = 9
+STRATEGY_CACHE_VERSION = 10
 SUPPORTED_STRATEGY_CACHE_VERSIONS = {STRATEGY_CACHE_VERSION}
 
 _PEAK_LEVEL_FIELDS = (

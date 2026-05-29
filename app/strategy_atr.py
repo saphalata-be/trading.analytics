@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import calendar
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-DEFAULT_ATR_MODE = "d1_50"
+DEFAULT_ATR_MODE = "d1_1month"
 
-ATR_MODE_FIXED_POINTS = {
-    "fixed_500": 500.0,
-    "fixed_1000": 1000.0,
+ATR_MODE_DAILY_MONTHS = {
+    DEFAULT_ATR_MODE: 1,
+    "d1_6months": 6,
 }
 
 ATR_MODE_LABELS = {
-    DEFAULT_ATR_MODE: "ATR50 D1",
-    "fixed_500": "ATR fixe 500 pts",
-    "fixed_1000": "ATR fixe 1000 pts",
+    DEFAULT_ATR_MODE: "ATR D1 1 mois",
+    "d1_6months": "ATR D1 6 mois",
 }
 
 ATR_MODE_OPTIONS = tuple(ATR_MODE_LABELS)
@@ -28,8 +29,23 @@ def atr_mode_label(value: str | None) -> str:
     return ATR_MODE_LABELS[normalize_atr_mode(value)]
 
 
-def fixed_atr_points(value: str | None) -> float | None:
-    return ATR_MODE_FIXED_POINTS.get(normalize_atr_mode(value))
+def atr_mode_months(value: str | None) -> int:
+    return ATR_MODE_DAILY_MONTHS[normalize_atr_mode(value)]
+
+
+def subtract_months(value: date | datetime, months: int) -> date:
+    if isinstance(value, datetime):
+        value = value.date()
+
+    month_index = value.month - 1 - months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def daily_atr_window_start(before_dt: date | datetime, atr_mode: str | None) -> date:
+    return subtract_months(before_dt, atr_mode_months(atr_mode))
 
 
 def infer_point_size(symbol: str, prices: list[float]) -> float:
@@ -52,9 +68,3 @@ def infer_point_size(symbol: str, prices: list[float]) -> float:
         return 0.001 if symbol.endswith("JPY") else 0.00001
     return 1.0
 
-
-def fixed_atr_price_value(atr_mode: str | None, point_size: float) -> float | None:
-    points = fixed_atr_points(atr_mode)
-    if points is None:
-        return None
-    return points * point_size

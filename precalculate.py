@@ -67,7 +67,7 @@ from app.strategy_atr import (
     ATR_MODE_OPTIONS,
     DEFAULT_ATR_MODE,
     atr_mode_label,
-    fixed_atr_price_value,
+    daily_atr_window_start,
     infer_point_size,
     normalize_atr_mode,
 )
@@ -313,14 +313,9 @@ def _aggregate_local(cycles: list[dict], tp_atr: float, level_atr: float) -> dic
 
 def _atr_by_idx_for_mode(
     atr_mode: str,
-    atr50_by_idx: dict,
-    n_bars: int,
-    point_size: float,
+    atr_by_mode: dict[str, dict],
 ) -> dict:
-    fixed_value = fixed_atr_price_value(atr_mode, point_size)
-    if fixed_value is None:
-        return atr50_by_idx
-    return {idx: fixed_value for idx in range(n_bars)}
+    return atr_by_mode.get(normalize_atr_mode(atr_mode), {})
 
 
 # Module-level queue; set by _worker_init() called as the ProcessPoolExecutor
@@ -350,6 +345,7 @@ def _worker_instrument(
     bar_days: list,
     hourly_indices: list,
     atr50_by_idx: dict,
+    atr_by_mode_maps: dict[str, dict],
     point_size: float,
     hour_ts_min: list,
     hour_high: list,
@@ -363,7 +359,8 @@ def _worker_instrument(
     Each result is pushed to _result_queue immediately so the main process
     can save it without waiting for the full symbol to complete.
     """
-    atr_by_mode: dict[str, dict] = {DEFAULT_ATR_MODE: atr50_by_idx}
+    atr_by_mode: dict[str, dict] = dict(atr_by_mode_maps)
+    atr_by_mode.setdefault(DEFAULT_ATR_MODE, atr50_by_idx)
     adx_by_period: dict[int, dict[int, float]] = {}
     for combo in combos:
         try:
@@ -371,9 +368,7 @@ def _worker_instrument(
             if atr_by_idx is None:
                 atr_by_idx = _atr_by_idx_for_mode(
                     combo.atr_mode,
-                    atr50_by_idx,
-                    len(bars_open),
-                    point_size,
+                    atr_by_mode,
                 )
                 atr_by_mode[combo.atr_mode] = atr_by_idx
 
@@ -589,7 +584,7 @@ def _get_instruments(con, symbol: str | None, exchange: str | None) -> list[tupl
 
 def _load_instrument_data(
     con, symbol: str, exchange: str
-) -> tuple[list, list, list, list, list, list, dict, float, list, list, list, list]:
+) -> tuple[list, list, list, list, list, list, dict, dict, float, list, list, list, list]:
     """
     Load and pre-process instrument data into primitive-only structures.
 
@@ -599,7 +594,8 @@ def _load_instrument_data(
     bar_ts_min                     : list[int]  (minutes since epoch, for duration)
     bar_days                       : list[str]  (YYYY-MM-DD, for reporting)
     hourly_indices                 : list[int]  (bar indices where minute == 0)
-    atr50_by_idx                   : dict[int, float]  (ATR50 keyed by bar index)
+    atr50_by_idx                   : dict[int, float]  (default ATR keyed by bar index)
+    atr_by_mode                    : dict[str, dict[int, float]]
     point_size                     : float      (price value of one point)
     hour_*                         : list       (1h bars for ADX)
     """
@@ -614,7 +610,7 @@ def _load_instrument_data(
     ).fetchall()
 
     if not min_rows:
-        return [], [], [], [], [], [], {}, 1.0, [], [], [], []
+        return [], [], [], [], [], [], {}, {}, 1.0, [], [], [], []
 
     bars_open = [r[1] for r in min_rows]
     bars_high = [r[2] for r in min_rows]
@@ -624,7 +620,7 @@ def _load_instrument_data(
     bar_days = [r[0].date().isoformat() for r in min_rows]
     hourly_indices = [i for i, r in enumerate(min_rows) if r[0].minute == 0]
 
-    # Daily bars for ATR50 (ASC order for bisect)
+    # Daily bars for ATR modes (ASC order for bisect)
     daily_rows = con.execute(
         """
         SELECT datetime, high, low
@@ -638,20 +634,26 @@ def _load_instrument_data(
     daily_dates = [r[0].date() for r in daily_rows]
     daily_ranges = [(r[1], r[2]) for r in daily_rows]  # (high, low)
 
-    # Pre-compute ATR50 for each unique minute date, then map to bar index.
+    # Pre-compute daily ATR for each unique minute date, then map to bar index.
     # Filtered entries are event-based and can trigger on any 1min bar.
-    atr50_by_date: dict = {}
-    for d in {row[0].date() for row in min_rows}:
-        idx = bisect.bisect_left(daily_dates, d)  # first bar with date >= d
-        slice_50 = daily_ranges[max(0, idx - 50) : idx]
-        if len(slice_50) >= 50:
-            atr50_by_date[d] = sum(h - l for h, l in slice_50) / 50
+    unique_minute_dates = {row[0].date() for row in min_rows}
+    atr_by_mode: dict[str, dict[int, float]] = {}
+    for atr_mode in ATR_MODE_OPTIONS:
+        atr_by_date: dict = {}
+        for d in unique_minute_dates:
+            start_date = daily_atr_window_start(d, atr_mode)
+            start_idx = bisect.bisect_left(daily_dates, start_date)
+            end_idx = bisect.bisect_left(daily_dates, d)
+            window_ranges = daily_ranges[start_idx:end_idx]
+            if window_ranges:
+                atr_by_date[d] = sum(h - l for h, l in window_ranges) / len(window_ranges)
 
-    atr50_by_idx = {
-        i: atr50_by_date[row[0].date()]
-        for i, row in enumerate(min_rows)
-        if row[0].date() in atr50_by_date
-    }
+        atr_by_mode[atr_mode] = {
+            i: atr_by_date[row[0].date()]
+            for i, row in enumerate(min_rows)
+            if row[0].date() in atr_by_date
+        }
+    atr50_by_idx = atr_by_mode.get(DEFAULT_ATR_MODE, {})
 
     hour_rows = con.execute(
         """
@@ -675,6 +677,7 @@ def _load_instrument_data(
         bar_days,
         hourly_indices,
         atr50_by_idx,
+        atr_by_mode,
         point_size,
         hour_ts_min,
         hour_high,
@@ -722,7 +725,7 @@ def main() -> None:
         choices=ATR_MODE_OPTIONS,
         default=list(ATR_MODE_OPTIONS),
         metavar="MODE",
-        help="ATR modes to test: d1_50 fixed_500 fixed_1000 (default: all)",
+        help="ATR modes to test: d1_1month d1_6months (default: all)",
     )
     parser.add_argument(
         "--entry-filter",
@@ -738,7 +741,7 @@ def main() -> None:
         type=float,
         default=[2.0, 3.0],
         metavar="F",
-        help="Initial adverse move in ATR for entry filter 1 (default: 2.0)",
+        help="Initial adverse mo ve in ATR for entry filter 1 (default: 2.0)",
     )
     parser.add_argument(
         "--initial-retrace-atr",
@@ -897,6 +900,7 @@ def main() -> None:
                             bar_days,
                             hourly_indices,
                             atr50_by_idx,
+                            atr_by_mode,
                             point_size,
                             hour_ts_min,
                             hour_high,
@@ -919,7 +923,7 @@ def main() -> None:
                             _worker_instrument,
                             symbol, exchange, direction_mode,
                             bars_open, bars_high, bars_low,
-                            bar_ts_min, bar_days, hourly_indices, atr50_by_idx, point_size,
+                            bar_ts_min, bar_days, hourly_indices, atr50_by_idx, atr_by_mode, point_size,
                             hour_ts_min, hour_high, hour_low, hour_close,
                             combo_batch,
                         )

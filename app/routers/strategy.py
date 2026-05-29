@@ -3,14 +3,14 @@ Router for the Grid Averaging Strategy backtest page.
 
 Strategy rules (per cycle, direction = LONG or SHORT):
   - Entry at cycle start price P0, size = 1 unit each level
-  - TP : cumulative profit of all open positions >= tp_atr * ATR50 (default 0.5)
-      => for LONG  : sum_i(close - entry_i) >= tp_atr * ATR50
-      => for SHORT : sum_i(entry_i - close) >= tp_atr * ATR50
-  - New level added when price moves adversely >= level_atr * ATR50 (default 1.0)
+  - TP : cumulative profit of all open positions >= tp_atr * ATR (default 0.5)
+      => for LONG  : sum_i(close - entry_i) >= tp_atr * ATR
+      => for SHORT : sum_i(entry_i - close) >= tp_atr * ATR
+  - New level added when price moves adversely >= level_atr * ATR (default 1.0)
     from the LAST level entry price (not from P0).
   - Cycles start every full hour on the 1min data.
-  - ATR50 = average of (high-low) over the 50 daily candles strictly
-    before the cycle start date.
+  - ATR = average of (high-low) over the configured daily calendar window
+    strictly before the cycle start date.
   - Max levels cap is user-configurable.
   - Open cycles at end of data are kept and flagged as incomplete.
 """
@@ -44,8 +44,7 @@ from app.strategy_cache import STRATEGY_CACHE_VERSION, normalize_strategy_cache_
 from app.strategy_atr import (
     DEFAULT_ATR_MODE,
     atr_mode_label,
-    fixed_atr_price_value,
-    infer_point_size,
+    daily_atr_window_start,
     normalize_atr_mode,
 )
 from app.strategy_stats import aggregate_cycles
@@ -108,20 +107,27 @@ templates = Jinja2Templates(directory="app/templates")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _compute_atr50(con, symbol: str, exchange: str, before_dt: datetime) -> Optional[float]:
-    """Return ATR50 (mean of daily high-low) from the 50 daily candles before before_dt."""
+def _compute_daily_atr(
+    con,
+    symbol: str,
+    exchange: str,
+    before_dt: datetime,
+    atr_mode: str,
+) -> Optional[float]:
+    """Return mean daily high-low for the ATR mode window before before_dt."""
+    window_start = daily_atr_window_start(before_dt, atr_mode)
     rows = con.execute(
         """
         SELECT high, low
         FROM ohlcv
         WHERE symbol = ? AND exchange = ? AND timeframe = '1day'
+          AND CAST(datetime AS DATE) >= ?
           AND CAST(datetime AS DATE) < CAST(? AS DATE)
         ORDER BY datetime DESC
-        LIMIT 50
         """,
-        [symbol, exchange, before_dt],
+        [symbol, exchange, window_start, before_dt],
     ).fetchall()
-    if len(rows) < 50:
+    if not rows:
         return None
     return sum(h - l for h, l in rows) / len(rows)
 
@@ -245,7 +251,6 @@ def _simulate_cycles(
     bars_open = [bar[1] for bar in bars]
     bars_high = [bar[2] for bar in bars]
     bars_low = [bar[3] for bar in bars]
-    fixed_atr = fixed_atr_price_value(atr_mode, infer_point_size(symbol, bars_open + bars_high + bars_low))
     adx_by_idx: dict[int, float] | None = None
     if entry_filter_config.adx_period is not None:
         adx_by_idx = _load_adx_by_minute_idx(
@@ -261,7 +266,7 @@ def _simulate_cycles(
         i for i, b in enumerate(bars) if b[0].minute == 0
     ]
 
-    # Cache daily ATR50 by date (to avoid recomputing for same date)
+    # Cache daily ATR by date (to avoid recomputing for same date)
     atr_cache: dict[str, Optional[float]] = {}
 
     results: list[dict] = []
@@ -271,10 +276,8 @@ def _simulate_cycles(
         for idx, bar in enumerate(bars):
             bar_dt: datetime = bar[0]
             date_key = bar_dt.date().isoformat()
-            if fixed_atr is not None:
-                atr50 = fixed_atr
-            elif date_key not in atr_cache:
-                atr_cache[date_key] = _compute_atr50(con, symbol, exchange, bar_dt)
+            if date_key not in atr_cache:
+                atr_cache[date_key] = _compute_daily_atr(con, symbol, exchange, bar_dt, atr_mode)
                 atr50 = atr_cache[date_key]
             else:
                 atr50 = atr_cache[date_key]
@@ -317,12 +320,10 @@ def _simulate_cycles(
         start_bar = bars[start_idx]
         start_dt: datetime = start_bar[0]
 
-        # ATR50 from daily data before start_dt
+        # ATR from daily data before start_dt
         date_key = start_dt.date().isoformat()
-        if fixed_atr is not None:
-            atr50 = fixed_atr
-        elif date_key not in atr_cache:
-            atr_cache[date_key] = _compute_atr50(con, symbol, exchange, start_dt)
+        if date_key not in atr_cache:
+            atr_cache[date_key] = _compute_daily_atr(con, symbol, exchange, start_dt, atr_mode)
             atr50 = atr_cache[date_key]
         else:
             atr50 = atr_cache[date_key]

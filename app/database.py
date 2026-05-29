@@ -398,7 +398,7 @@ def init_cache_db() -> None:
                 max_levels          INTEGER NOT NULL,
                 tp_atr              DOUBLE NOT NULL,
                 level_atr           DOUBLE NOT NULL,
-                atr_mode            VARCHAR NOT NULL DEFAULT 'd1_50',
+                atr_mode            VARCHAR NOT NULL DEFAULT 'd1_1month',
                 entry_filter_id     INTEGER NOT NULL DEFAULT 0,
                 initial_move_atr    DOUBLE NOT NULL DEFAULT 0.0,
                 initial_retrace_atr DOUBLE NOT NULL DEFAULT 0.0,
